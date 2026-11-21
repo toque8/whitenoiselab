@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="ru">
 <head>
 <meta charset="utf-8">
@@ -181,7 +181,7 @@
 
     <div class="hint">−40 дБ — шум еле слышен, −20 дБ — спокойный фон, −6 дБ — почти вровень, 0 дБ — одинаковая громкость</div>
     <div class="hint">Шум подмешивается в исходный трек без изменения его длины — так делают наборы данных для обучения и проверки распознавания речи</div>
-    <div class="note" id="mixFormatNote">Формат, частота и нормализация берутся из вкладки «Генератор»</div>
+    <div class="note" id="mixFormatNote">Формат и нормализация берутся из вкладки «Генератор»</div>
 
     <button class="btn-primary" id="mixBtn" type="button" disabled>Наложить шум</button>
   </aside>
@@ -301,7 +301,7 @@
     </div>
 
     <div class="lab-panel hidden" data-panel="curve">
-      <div class="hint">Рисуйте мышкой или пальцем прямо в окне: слева низкие частоты, справа высокие. Чем выше линия, тем громче эта часть спектра, линия внизу почти убирает её</div>
+      <div class="hint">Рисуйте мышкой или пальцем прямо в окне: слева низкие частоты, справа высокие. Чем выше линия, тем громче эта часть спектра, линия внизу почти убирает её. После генерации переключитесь на «Спектрограмму» и сравните результат с рисунком</div>
       <div class="section">
         <div class="section-label plain">Длительность</div>
         <div class="input-row">
@@ -380,6 +380,7 @@
       <div class="view-toggle" id="viewToggle">
         <button class="view-btn active" data-view="wave" type="button">Волна</button>
         <button class="view-btn" data-view="spectro" type="button">Спектрограмма</button>
+        <button class="view-btn hidden" data-view="curve" id="viewCurveBtn" type="button">Кривая</button>
       </div>
       <div class="stage-meta" id="stageMeta">— · —</div>
     </div>
@@ -404,7 +405,7 @@
     <div class="analysis hidden" id="analysis"></div>
 
     <div class="progress-dock" id="progressDock" data-state="idle">
-      <div class="progress-track">
+      <div class="progress-track" id="progressTrack">
         <div class="progress-fill" id="progressFill"></div>
         <div class="progress-square" id="progressSquare"></div>
       </div>
@@ -415,11 +416,11 @@
     </div>
 
     <div class="seek-row">
-      <input type="range" class="seek" id="seekBar" min="0" max="1000" step="1" value="0" disabled>
+      <input type="range" class="seek" id="seekBar" min="0" max="1000" step="1" value="0" title="Стрелки ← → — перемотка" disabled>
     </div>
 
     <div class="player">
-      <button class="play-btn" id="playBtn" type="button" disabled>
+      <button class="play-btn" id="playBtn" type="button" title="Пробел" disabled>
         <svg id="playIcon" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
       </button>
       <div class="time" id="timeDisplay">0:00 / 0:00</div>
@@ -429,21 +430,33 @@
         </svg>
       </button>
       <div class="player-spacer"></div>
-      <button class="btn-secondary" id="downloadBtn" type="button" disabled>
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
-        </svg>
-        <span id="downloadLabel">Скачать WAV</span>
-      </button>
+      <div class="dl-group">
+        <select class="select compact" id="mp3RateSelect" title="Битрейт MP3">
+          <option value="128">128 кбит</option>
+          <option value="192" selected>192 кбит</option>
+          <option value="256">256 кбит</option>
+          <option value="320">320 кбит</option>
+        </select>
+        <button class="btn-secondary dl-btn" id="dlWavBtn" type="button" title="Скачать WAV" disabled>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+          </svg>
+          <span>WAV</span>
+        </button>
+        <button class="btn-secondary dl-btn" id="dlMp3Btn" type="button" title="Скачать MP3" disabled>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+          </svg>
+          <span>MP3</span>
+        </button>
+      </div>
     </div>
   </section>
 
 </main>
 
 <footer class="footer">
-  <span>White Noise Lab · v1.2</span>
-  <span class="hotkeys">Пробел — play · ← → — перемотка 5 сек · Shift + ← → — 30 сек</span>
-  <span>Всё считается локально в браузере</span>
+  <span>White Noise Lab · v1.0</span>
 </footer>
 
 <script src="app.js"></script>
