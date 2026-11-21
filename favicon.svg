@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+<defs>
+<linearGradient id="wnl-bg" x1="0" y1="0" x2="0" y2="1">
+<stop offset="0" stop-color="#241f1a"/>
+<stop offset="1" stop-color="#141210"/>
+</linearGradient>
+</defs>
+<rect width="32" height="32" rx="7" fill="url(#wnl-bg)"/>
+<rect x="0.5" y="0.5" width="31" height="31" rx="6.5" fill="none" stroke="#3d352e" stroke-width="1"/>
+<g fill="none" stroke-width="3" stroke-linecap="round">
+<path d="M7 10v12" stroke="#c19a6b"/>
+<path d="M13 6v20" stroke="#d4ad7d"/>
+<path d="M19 11v10" stroke="#c19a6b"/>
+<path d="M25 7v18" stroke="#c19a6b"/>
+</g>
+</svg>
