@@ -1,0 +1,451 @@
+﻿<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>White Noise Lab</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="header">
+  <div class="logo">
+    <span class="logo-mark">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+        <path d="M2 12h2M6 7v10M10 4v16M14 8v8M18 5v14M22 12h-2"/>
+      </svg>
+    </span>
+    <span>White Noise Lab</span>
+  </div>
+  <nav class="tabs" id="tabs">
+    <button class="tab active" data-tab="generate" type="button">Генератор</button>
+    <button class="tab" data-tab="mix" type="button">Наложение</button>
+    <button class="tab" data-tab="lab" type="button">Лаборатория</button>
+  </nav>
+</header>
+
+<main class="workspace">
+
+  <aside class="panel sidebar" id="generatorSidebar">
+    <div class="section">
+      <div class="section-label">Тип шума</div>
+      <div class="swatches" id="swatches"></div>
+    </div>
+
+    <div class="section">
+      <div class="section-label plain">Длительность</div>
+      <div class="input-row">
+        <input type="range" class="slider" id="durationSlider" min="1" max="600" step="1" value="60">
+        <input type="number" class="num-input" id="durationNum" min="1" max="600" step="1" value="60">
+        <span class="unit">сек</span>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-label plain">Формат файла</div>
+      <div class="segmented" id="formatSegmented">
+        <button class="seg active" data-format="wav" type="button">WAV</button>
+        <button class="seg" data-format="mp3" type="button">MP3</button>
+      </div>
+    </div>
+
+    <div class="section hidden" id="mp3BitrateSection">
+      <div class="section-label plain">Битрейт MP3</div>
+      <select class="select" id="mp3BitrateSelect">
+        <option value="128">128 кбит/с</option>
+        <option value="192" selected>192 кбит/с</option>
+        <option value="256">256 кбит/с</option>
+        <option value="320">320 кбит/с</option>
+      </select>
+    </div>
+
+    <div class="section">
+      <div class="section-label plain">Частота</div>
+      <select class="select" id="sampleRateSelect">
+        <option value="22050">22 050 Гц</option>
+        <option value="44100" selected>44 100 Гц</option>
+        <option value="48000">48 000 Гц</option>
+        <option value="96000">96 000 Гц</option>
+      </select>
+    </div>
+
+    <div class="section" id="bitDepthSection">
+      <div class="section-label plain">Битрейт</div>
+      <select class="select" id="bitDepthSelect">
+        <option value="16">16 бит</option>
+        <option value="24" selected>24 бит</option>
+        <option value="32">32 бит</option>
+      </select>
+    </div>
+
+    <div class="section">
+      <div class="section-label plain">Каналы</div>
+      <div class="segmented" id="channelSegmented">
+        <button class="seg active" data-channels="2" type="button">Стерео</button>
+        <button class="seg" data-channels="1" type="button">Моно</button>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-label plain">Нормализация</div>
+      <select class="select" id="normModeSelect">
+        <option value="peak" selected>По пику</option>
+        <option value="rms">По RMS</option>
+        <option value="lufs">По LUFS (приближение)</option>
+      </select>
+      <div class="input-row">
+        <input type="range" class="slider" id="normTargetSlider" min="-40" max="0" step="1" value="-1">
+        <input type="number" class="num-input" id="normTargetNum" min="-40" max="0" step="1" value="-1">
+        <span class="unit" id="normTargetUnit">dBFS</span>
+      </div>
+      <div class="note" id="normNote">Пик выравнивает самый громкий отсчёт, из-за этого коричневый шум звучит тише белого</div>
+    </div>
+
+    <div class="section" id="fadeInSection">
+      <div class="section-label plain">Fade in</div>
+      <div class="input-row">
+        <input type="range" class="slider" id="fadeInSlider" min="0" max="30" step="1" value="0">
+        <input type="number" class="num-input" id="fadeInNum" min="0" max="30" step="1" value="0">
+        <span class="unit">сек</span>
+      </div>
+    </div>
+
+    <div class="section" id="fadeOutSection">
+      <div class="section-label plain">Fade out</div>
+      <div class="input-row">
+        <input type="range" class="slider" id="fadeOutSlider" min="0" max="30" step="1" value="0">
+        <input type="number" class="num-input" id="fadeOutNum" min="0" max="30" step="1" value="0">
+        <span class="unit">сек</span>
+      </div>
+    </div>
+
+    <div class="section" id="padStartSection">
+      <div class="section-label plain">Тишина в начале</div>
+      <div class="input-row">
+        <input type="range" class="slider" id="padStartSlider" min="0" max="60" step="1" value="0">
+        <input type="number" class="num-input" id="padStartNum" min="0" max="60" step="1" value="0">
+        <span class="unit">сек</span>
+      </div>
+    </div>
+
+    <div class="section" id="padEndSection">
+      <div class="section-label plain">Тишина в конце</div>
+      <div class="input-row">
+        <input type="range" class="slider" id="padEndSlider" min="0" max="60" step="1" value="0">
+        <input type="number" class="num-input" id="padEndNum" min="0" max="60" step="1" value="0">
+        <span class="unit">сек</span>
+      </div>
+    </div>
+
+    <label class="switch-row" for="loopToggle">
+      <input type="checkbox" id="loopToggle" class="switch-input">
+      <span class="switch-track"><span class="switch-knob"></span></span>
+      <span class="switch-text">Повторять
+        <span class="switch-sub">Конец файла плавно переходит в начало, плеер играет по кругу</span>
+      </span>
+    </label>
+
+    <div class="hint hidden" id="loopHint">В режиме «Повторять» фейды и тишина отключаются — файл должен замыкаться сам на себя</div>
+    <div class="hint hidden" id="loopMp3Hint">MP3 добавляет служебную паузу кодировщика, идеально ровный круг получается только в WAV</div>
+
+    <button class="btn-primary" id="generateBtn" type="button">Сгенерировать</button>
+    <div class="estimate" id="estimate">Примерный размер: —</div>
+  </aside>
+
+  <aside class="panel sidebar hidden" id="mixSidebar">
+    <div class="section">
+      <div class="section-label">Трек</div>
+      <label class="upload-mini" for="mixFileInput">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>
+        </svg>
+        <span id="mixFileName">Выбрать аудиофайл</span>
+      </label>
+      <input type="file" id="mixFileInput" accept="audio/*" class="hidden">
+      <div class="estimate" id="mixInfo">Файл не выбран</div>
+    </div>
+
+    <div class="section">
+      <div class="section-label">Шум</div>
+      <div class="swatches" id="mixSwatches"></div>
+    </div>
+
+    <div class="section">
+      <div class="section-label plain">Громкость шума относительно трека</div>
+      <div class="input-row">
+        <input type="range" class="slider" id="snrSlider" min="-40" max="0" step="1" value="-20">
+        <input type="number" class="num-input" id="snrNum" min="-40" max="0" step="1" value="-20">
+        <span class="unit">дБ</span>
+      </div>
+    </div>
+
+    <div class="hint">−40 дБ — шум еле слышен, −20 дБ — спокойный фон, −6 дБ — почти вровень, 0 дБ — одинаковая громкость</div>
+    <div class="hint">Шум подмешивается в исходный трек без изменения его длины — так делают наборы данных для обучения и проверки распознавания речи</div>
+    <div class="note" id="mixFormatNote">Формат, частота и нормализация берутся из вкладки «Генератор»</div>
+
+    <button class="btn-primary" id="mixBtn" type="button" disabled>Наложить шум</button>
+  </aside>
+
+  <aside class="panel sidebar hidden" id="labSidebar">
+    <div class="section">
+      <div class="section-label">Инструмент</div>
+      <div class="lab-tools" id="labTools">
+        <button class="lab-tool active" data-tool="notch" type="button">Вырез</button>
+        <button class="lab-tool" data-tool="bin" type="button">Бинаурал</button>
+        <button class="lab-tool" data-tool="rot8d" type="button">8D</button>
+        <button class="lab-tool" data-tool="test" type="button">Тест</button>
+        <button class="lab-tool" data-tool="curve" type="button">Кривая</button>
+        <button class="lab-tool" data-tool="dither" type="button">Дизеринг</button>
+        <button class="lab-tool" data-tool="calib" type="button">Калибровка</button>
+        <button class="lab-tool" data-tool="synth" type="button">Синтез</button>
+        <button class="lab-tool" data-tool="perc" type="button">Перкуссия</button>
+      </div>
+    </div>
+
+    <div class="lab-panel" data-panel="notch">
+      <div class="section">
+        <div class="section-label plain">Частота выреза</div>
+        <div class="input-row">
+          <input type="range" class="slider" id="notchFreq" min="100" max="12000" step="1" value="1000">
+          <input type="number" class="num-input" id="notchFreqNum" min="100" max="12000" step="1" value="1000">
+          <span class="unit">Гц</span>
+        </div>
+      </div>
+      <div class="section">
+        <div class="section-label plain">Узость выреза</div>
+        <div class="input-row">
+          <input type="range" class="slider" id="notchQ" min="3" max="50" step="1" value="12">
+          <input type="number" class="num-input" id="notchQNum" min="3" max="50" step="1" value="12">
+          <span class="unit">Q</span>
+        </div>
+      </div>
+      <div class="hint">Розовый шум, в котором вырезана узкая полоса частот. Если в ушах звенит на одной ноте, поставьте частоту выреза на эту ноту — шум закроет всё вокруг неё, а сам звон станет менее заметным. Чем больше Q, тем уже вырез</div>
+      <div class="section">
+        <div class="section-label">Таймер</div>
+        <div class="segmented" id="notchTimer">
+          <button class="seg active" data-min="0" type="button">Выкл</button>
+          <button class="seg" data-min="5" type="button">5м</button>
+          <button class="seg" data-min="15" type="button">15м</button>
+          <button class="seg" data-min="30" type="button">30м</button>
+          <button class="seg" data-min="60" type="button">60м</button>
+        </div>
+        <div class="countdown hidden" id="notchCountdown">Осталось 0:00</div>
+      </div>
+      <div class="lab-actions">
+        <button class="btn-primary" id="notchPlay" type="button">Включить</button>
+        <button class="btn-secondary hidden" id="notchStop" type="button">Остановить</button>
+      </div>
+    </div>
+
+    <div class="lab-panel hidden" data-panel="bin">
+      <div class="section">
+        <div class="section-label plain">Основной тон</div>
+        <div class="input-row">
+          <input type="range" class="slider" id="binBase" min="100" max="500" step="1" value="200">
+          <input type="number" class="num-input" id="binBaseNum" min="100" max="500" step="1" value="200">
+          <span class="unit">Гц</span>
+        </div>
+      </div>
+      <div class="section">
+        <div class="section-label plain">Разница между ушами</div>
+        <div class="input-row">
+          <input type="range" class="slider" id="binBeat" min="2" max="15" step="1" value="6">
+          <input type="number" class="num-input" id="binBeatNum" min="2" max="15" step="1" value="6">
+          <span class="unit">Гц</span>
+        </div>
+      </div>
+      <div class="hint">В левое ухо идёт один тон, в правое — чуть выше. Мозг слышит разницу как медленную пульсацию: 2–4 Гц — расслабление, 6–8 Гц — спокойствие и сон, 10–12 Гц — концентрация. Работает только в наушниках, фоном идёт тихий розовый шум</div>
+      <div class="section">
+        <div class="section-label">Таймер</div>
+        <div class="segmented" id="binTimer">
+          <button class="seg active" data-min="0" type="button">Выкл</button>
+          <button class="seg" data-min="5" type="button">5м</button>
+          <button class="seg" data-min="15" type="button">15м</button>
+          <button class="seg" data-min="30" type="button">30м</button>
+          <button class="seg" data-min="60" type="button">60м</button>
+        </div>
+        <div class="countdown hidden" id="binCountdown">Осталось 0:00</div>
+      </div>
+      <div class="lab-actions">
+        <button class="btn-primary" id="binPlay" type="button">Включить</button>
+        <button class="btn-secondary hidden" id="binStop" type="button">Остановить</button>
+      </div>
+    </div>
+
+    <div class="lab-panel hidden" data-panel="rot8d">
+      <div class="section">
+        <div class="section-label plain">Скорость вращения</div>
+        <div class="input-row">
+          <input type="range" class="slider" id="rot8dSpeed" min="1" max="10" step="1" value="3">
+          <input type="number" class="num-input" id="rot8dSpeedNum" min="1" max="10" step="1" value="3">
+          <span class="unit">×</span>
+        </div>
+      </div>
+      <div class="hint">Шум плавно кружится вокруг головы: то справа, то слева, то сзади. Объём считается по модели головы HRTF, нужны наушники</div>
+      <div class="lab-actions">
+        <button class="btn-primary" id="rot8dPlay" type="button">Включить</button>
+        <button class="btn-secondary hidden" id="rot8dStop" type="button">Остановить</button>
+      </div>
+    </div>
+
+    <div class="lab-panel hidden" data-panel="test">
+      <div class="section">
+        <div class="section-label plain">Вид шума</div>
+        <div class="swatches" id="testSwatches"></div>
+      </div>
+      <div class="hint">Все семь видов звучат на одинаковой громкости, переключение идёт плавно. Так слышно разницу именно в тембре: белый резкий, розовый мягкий, коричневый глухой, синий и фиолетовый шипящие</div>
+      <div class="lab-actions">
+        <button class="btn-primary" id="testPlay" type="button">Включить</button>
+        <button class="btn-secondary hidden" id="testStop" type="button">Остановить</button>
+      </div>
+    </div>
+
+    <div class="lab-panel hidden" data-panel="curve">
+      <div class="hint">Рисуйте мышкой или пальцем прямо в окне: слева низкие частоты, справа высокие. Чем выше линия, тем громче эта часть спектра, линия внизу почти убирает её</div>
+      <div class="section">
+        <div class="section-label plain">Длительность</div>
+        <div class="input-row">
+          <input type="range" class="slider" id="curveDur" min="5" max="120" step="1" value="20">
+          <input type="number" class="num-input" id="curveDurNum" min="5" max="120" step="1" value="20">
+          <span class="unit">сек</span>
+        </div>
+      </div>
+      <div class="stack">
+        <button class="btn-primary" id="curveGen" type="button">Сгенерировать</button>
+        <button class="btn-secondary" id="curveReset" type="button">Сбросить кривую</button>
+      </div>
+    </div>
+
+    <div class="lab-panel hidden" data-panel="dither">
+      <div class="hint">Очень тихий тон 440 Гц. Без дизеринга он округляется до 16 бит и превращается в ступеньки, с дизерингом добавляется микроскопический шум и тон остаётся чистым даже на самой малой громкости</div>
+      <div class="note">Этот тест всегда сохраняется в WAV 16 бит, иначе смысл сравнения теряется</div>
+      <div class="stack">
+        <button class="btn-secondary" id="ditherNo" type="button">Без дизеринга</button>
+        <button class="btn-secondary" id="ditherYes" type="button">С дизерингом</button>
+      </div>
+    </div>
+
+    <div class="lab-panel hidden" data-panel="calib">
+      <div class="hint">Розовый шум на стандартном уровне −20 dBFS RMS. По нему выравнивают громкость колонок и мониторов перед работой со звуком</div>
+      <div class="section">
+        <div class="section-label plain">Длительность</div>
+        <div class="input-row">
+          <input type="range" class="slider" id="calibDur" min="10" max="120" step="1" value="30">
+          <input type="number" class="num-input" id="calibDurNum" min="10" max="120" step="1" value="30">
+          <span class="unit">сек</span>
+        </div>
+      </div>
+      <div class="note">Калибровка всегда WAV 16 бит и всегда −20 dBFS RMS, настройки генератора на неё не влияют</div>
+      <button class="btn-primary" id="calibBtn" type="button">Сгенерировать −20 dBFS</button>
+    </div>
+
+    <div class="lab-panel hidden" data-panel="synth">
+      <div class="section">
+        <div class="section-label plain">Текстура</div>
+        <div class="segmented" id="synthType">
+          <button class="seg active" data-synth="wind" type="button">Ветер</button>
+          <button class="seg" data-synth="rain" type="button">Дождь</button>
+          <button class="seg" data-synth="surf" type="button">Прибой</button>
+        </div>
+      </div>
+      <div class="section">
+        <div class="section-label plain">Длительность</div>
+        <div class="input-row">
+          <input type="range" class="slider" id="synthDur" min="5" max="600" step="1" value="30">
+          <input type="number" class="num-input" id="synthDurNum" min="5" max="600" step="1" value="30">
+          <span class="unit">сек</span>
+        </div>
+      </div>
+      <div class="hint">Природные текстуры из шума: ветер — низкий гул с порывами, дождь — ровный высокий шелест, прибой — медленные волны, которые накатывают и отступают</div>
+      <button class="btn-primary" id="synthBtn" type="button">Сгенерировать</button>
+    </div>
+
+    <div class="lab-panel hidden" data-panel="perc">
+      <div class="section">
+        <div class="section-label plain">Удар</div>
+        <div class="segmented" id="percType">
+          <button class="seg active" data-perc="snare" type="button">Барабан</button>
+          <button class="seg" data-perc="hat" type="button">Тарелка</button>
+          <button class="seg" data-perc="kick" type="button">Бочка</button>
+        </div>
+      </div>
+      <div class="hint">Одиночные удары для драм-машин и сэмплов: барабан — резкий хлопок с коротким тоном, тарелка — сухой металлический шелест, бочка — низкий удар с падающей высотой. Каждый удар получается новым</div>
+      <button class="btn-primary" id="percBtn" type="button">Сгенерировать</button>
+    </div>
+  </aside>
+
+  <section class="panel stage">
+    <div class="stage-header">
+      <div class="stage-label" id="stageLabel">Визуализация</div>
+      <div class="view-toggle" id="viewToggle">
+        <button class="view-btn active" data-view="wave" type="button">Волна</button>
+        <button class="view-btn" data-view="spectro" type="button">Спектрограмма</button>
+      </div>
+      <div class="stage-meta" id="stageMeta">— · —</div>
+    </div>
+
+    <div class="visualizer" id="visualizer">
+      <canvas id="waveform"></canvas>
+      <canvas id="spectroCanvas" class="hidden"></canvas>
+      <canvas id="curveCanvas" class="hidden"></canvas>
+      <div class="empty-state" id="emptyState">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+          <path d="M2 12h2.5M7 6v12M11.5 3v18M16 8v8M20.5 10v4"/>
+        </svg>
+        <div>Нажмите «Сгенерировать», загрузите трек или выберите инструмент</div>
+      </div>
+    </div>
+
+    <div class="spectro-legend hidden" id="spectroLegend">
+      <span class="legend-caption">Снизу вверх — частота, слева направо — время</span>
+      <span class="legend-scale"><i>тише</i><span class="legend-bar"></span><i>громче</i></span>
+    </div>
+
+    <div class="analysis hidden" id="analysis"></div>
+
+    <div class="progress-dock" id="progressDock" data-state="idle">
+      <div class="progress-track">
+        <div class="progress-fill" id="progressFill"></div>
+        <div class="progress-square" id="progressSquare"></div>
+      </div>
+      <div class="progress-info">
+        <span id="progressLabel">Готов к работе</span>
+        <span id="progressPercent">0%</span>
+      </div>
+    </div>
+
+    <div class="seek-row">
+      <input type="range" class="seek" id="seekBar" min="0" max="1000" step="1" value="0" disabled>
+    </div>
+
+    <div class="player">
+      <button class="play-btn" id="playBtn" type="button" disabled>
+        <svg id="playIcon" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+      </button>
+      <div class="time" id="timeDisplay">0:00 / 0:00</div>
+      <button class="icon-btn" id="loopBtn" type="button" title="Повторять" aria-pressed="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/>
+        </svg>
+      </button>
+      <div class="player-spacer"></div>
+      <button class="btn-secondary" id="downloadBtn" type="button" disabled>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+        </svg>
+        <span id="downloadLabel">Скачать WAV</span>
+      </button>
+    </div>
+  </section>
+
+</main>
+
+<footer class="footer">
+  <span>White Noise Lab · v1.2</span>
+  <span class="hotkeys">Пробел — play · ← → — перемотка 5 сек · Shift + ← → — 30 сек</span>
+  <span>Всё считается локально в браузере</span>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>
