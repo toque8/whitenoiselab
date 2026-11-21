@@ -1,4 +1,4 @@
-﻿(function () {
+(function () {
 'use strict';
 
 const $ = (id) => document.getElementById(id);
@@ -7,10 +7,14 @@ const ALL_TYPES = ['white', 'pink', 'brown', 'blue', 'violet', 'green', 'grey'];
 const TYPE_LABELS = { white: 'Белый', pink: 'Розовый', brown: 'Коричневый', blue: 'Синий', violet: 'Фиолетовый', green: 'Зелёный', grey: 'Серый' };
 const TYPE_COLORS = { white: '#e8e2da', pink: '#dba9a3', brown: '#8f6b47', blue: '#7d8fa8', violet: '#9b7fa8', green: '#88a383', grey: '#8a8278' };
 const SIZE_LIMIT = 320 * 1024 * 1024;
+const DECODE_LIMIT = 340 * 1024 * 1024;
+const FILE_LIMIT = 180 * 1024 * 1024;
 const BUCKETS = 1600;
 const CHUNK = 32768;
-const SLICE_MS = 22;
+const MP3_CHUNK = 4608;
+const SLICE_MS = 20;
 const CEILING = Math.pow(10, -0.3 / 20);
+const MP3_RATES = [8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000];
 const NORM_DEFAULT = { peak: -1, rms: -20, lufs: -16 };
 const NORM_NOTE = {
 peak: 'Пик выравнивает самый громкий отсчёт, из-за этого коричневый шум звучит тише белого',
@@ -56,6 +60,7 @@ resultDuration: 0,
 resultSr: 44100,
 resultKey: 'noise',
 resultExt: 'wav',
+allowMp3: true,
 blob: null,
 blobUrl: null,
 busy: false,
@@ -67,13 +72,18 @@ let audioCtx = null;
 let labSession = null;
 let stageView = 'wave';
 let spectroData = null;
+let spectroImg = null;
 let lamePromise = null;
 let progressTimer = null;
+let progressP = 0;
+let railW = 0;
 let resizeRaf = 0;
+let curveLastIdx = -1;
+let curveLastVal = 0.5;
+let curveDrawing = false;
 const loopCache = new Map();
 const curveData = new Float32Array(400);
 curveData.fill(0.5);
-let curveDrawing = false;
 
 const yieldToUI = (function () {
 if (typeof MessageChannel === 'function') {
@@ -300,7 +310,6 @@ re[j] += tre; im[j] += tim;
 }
 };
 }
-
 function createSpectro(sr, totalFrames) {
 const N = 2048;
 const cols = clamp(Math.floor(totalFrames / 220), 24, 560);
@@ -321,7 +330,7 @@ const k0 = clamp(Math.floor(f0 * N / sr), 1, N / 2 - 1);
 const k1 = clamp(Math.ceil(f1 * N / sr), k0 + 1, N / 2);
 binStart[r] = k0; binEnd[r] = k1;
 }
-let ringPos = 0, col = 0, nextAt = 0;
+let ringPos = 0, col = 0, nextAt = hop;
 function column() {
 for (let i = 0; i < N; i++) {
 re[i] = ring[(ringPos + i) & (N - 1)] * win[i];
@@ -343,10 +352,7 @@ feed: function (bufs, n, startIdx) {
 for (let i = 0; i < n; i++) {
 ring[ringPos] = bufs[0][i];
 ringPos = (ringPos + 1) & (N - 1);
-if (startIdx + i === nextAt && col < cols) {
-column();
-nextAt += hop;
-}
+if (startIdx + i === nextAt && col < cols) { column(); nextAt += hop; }
 }
 },
 result: function () {
@@ -355,7 +361,6 @@ return { grid: grid, cols: cols, rows: rows, fMin: fMin, fMax: fMax };
 }
 };
 }
-
 function createLufsMeter(sr, ch) {
 const sub = Math.max(1, Math.round(sr * 0.1));
 const shelf = [], hp = [], sums = [];
@@ -368,9 +373,7 @@ shelf.push(rawBiquad(
 Vh + Vb * K / 0.7071752369554196 + K * K,
 2 * (K * K - Vh),
 Vh - Vb * K / 0.7071752369554196 + K * K,
-a0,
-2 * (K * K - 1),
-1 - K / 0.7071752369554196 + K * K
+a0, 2 * (K * K - 1), 1 - K / 0.7071752369554196 + K * K
 ));
 K = Math.tan(Math.PI * 38.13547087602444 / sr);
 a0 = 1 + K / 0.5003270373238773 + K * K;
@@ -378,7 +381,7 @@ hp.push(rawBiquad(1, -2, 1, a0, 2 * (K * K - 1), 1 - K / 0.5003270373238773 + K 
 sums.push([]);
 }
 const acc = new Float64Array(ch);
-let idx = 0;
+let idx = 0, flushed = false;
 return {
 feed: function (bufs, n) {
 for (let i = 0; i < n; i++) {
@@ -394,7 +397,10 @@ idx = 0;
 }
 },
 value: function () {
-for (let c = 0; c < ch; c++) if (idx > 0) sums[c].push(acc[c] * sub / idx);
+if (!flushed) {
+if (idx > 0) for (let c = 0; c < ch; c++) sums[c].push(acc[c] * sub / idx);
+flushed = true;
+}
 const nSub = sums[0].length;
 if (!nSub) return -Infinity;
 const per = Math.min(4, nSub);
@@ -428,9 +434,7 @@ const s = v > 1 ? 1 : (v < -1 ? -1 : v);
 return Math.round(s * 32767);
 }
 function makeWriter(bitDepth) {
-if (bitDepth === 16) {
-return function (dv, p, v) { dv.setInt16(p, toInt16(v), true); };
-}
+if (bitDepth === 16) return function (dv, p, v) { dv.setInt16(p, toInt16(v), true); };
 if (bitDepth === 24) {
 return function (dv, p, v) {
 const s = v > 1 ? 1 : (v < -1 ? -1 : v);
@@ -536,6 +540,18 @@ throw new Error('MP3-кодировщик не загрузился. Полож�
 }
 return lamePromise;
 }
+function mp3TargetRate(sr) {
+return MP3_RATES.indexOf(sr) >= 0 ? sr : 44100;
+}
+function readBuffer(file) {
+if (file.arrayBuffer) return file.arrayBuffer();
+return new Promise(function (res, rej) {
+const fr = new FileReader();
+fr.onload = function () { res(fr.result); };
+fr.onerror = function () { rej(new Error('Не удалось прочитать файл')); };
+fr.readAsArrayBuffer(file);
+});
+}
 
 function estimateSize(seconds, sr, channels, bitDepth, format, kbps) {
 if (format === 'mp3') return Math.round(seconds * kbps * 1000 / 8);
@@ -556,34 +572,50 @@ if (!isFinite(v)) return '—';
 return (v >= 0 ? '+' : '−') + Math.abs(v).toFixed(1).replace('.', ',');
 }
 function fmtDc(v) {
-const s = Math.abs(v).toFixed(5).replace('.', ',');
-return (v < 0 ? '−' : '+') + s;
+return (v < 0 ? '−' : '+') + Math.abs(v).toFixed(5).replace('.', ',');
 }
 function stamp() {
 const d = new Date();
 const p = (v) => (v < 10 ? '0' : '') + v;
 return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + '_' + p(d.getHours()) + '-' + p(d.getMinutes());
 }
+function friendlyError(e) {
+const m = e && e.message ? e.message : String(e || '');
+if (/allocat|out of memory|Array buffer|RangeError/i.test(m)) {
+return 'Не хватило памяти. Уменьшите длительность или частоту, выберите 16 бит, моно или формат MP3';
+}
+return m || 'Неизвестная ошибка';
+}
 
 const progressDock = $('progressDock');
+const progressSquare = $('progressSquare');
+function applyProgressTransform() {
+progressSquare.style.setProperty('--x', (railW * progressP).toFixed(1) + 'px');
+progressSquare.style.setProperty('--drift', railW.toFixed(1) + 'px');
+progressDock.style.setProperty('--p', progressP.toFixed(4));
+}
+function measureRail() {
+railW = Math.max(0, $('progressTrack').clientWidth - 16);
+applyProgressTransform();
+}
 function progressSet(p, label) {
 if (progressTimer) { clearTimeout(progressTimer); progressTimer = null; }
 progressDock.dataset.state = 'work';
-const v = clamp(p, 0, 1);
-progressDock.style.setProperty('--p', v.toFixed(4));
+progressP = clamp(p, 0, 1);
+applyProgressTransform();
 $('progressLabel').textContent = label;
-$('progressPercent').textContent = Math.round(v * 100) + '%';
+$('progressPercent').textContent = Math.round(progressP * 100) + '%';
 }
 function progressBusy(label) {
 if (progressTimer) { clearTimeout(progressTimer); progressTimer = null; }
 progressDock.dataset.state = 'busy';
-progressDock.style.setProperty('--p', '0');
 $('progressLabel').textContent = label;
 $('progressPercent').textContent = '';
 }
 function progressIdle() {
 progressDock.dataset.state = 'idle';
-progressDock.style.setProperty('--p', '0');
+progressP = 0;
+applyProgressTransform();
 $('progressLabel').textContent = 'Готов к работе';
 $('progressPercent').textContent = '0%';
 progressTimer = null;
@@ -591,7 +623,8 @@ progressTimer = null;
 function progressDone(label) {
 if (progressTimer) clearTimeout(progressTimer);
 progressDock.dataset.state = 'done';
-progressDock.style.setProperty('--p', '1');
+progressP = 1;
+applyProgressTransform();
 $('progressLabel').textContent = label;
 $('progressPercent').textContent = '100%';
 progressTimer = setTimeout(progressIdle, 2200);
@@ -605,11 +638,10 @@ progressTimer = setTimeout(progressIdle, 9000);
 }
 
 function showVisual(kind) {
-const wf = $('waveform'), sp = $('spectroCanvas'), cv = $('curveCanvas'), es = $('emptyState');
-wf.style.display = kind === 'wave' ? 'block' : 'none';
-sp.classList.toggle('hidden', kind !== 'spectro');
-cv.classList.toggle('hidden', kind !== 'curve');
-es.classList.toggle('hidden', kind !== 'empty');
+$('waveform').style.display = kind === 'wave' ? 'block' : 'none';
+$('spectroCanvas').classList.toggle('hidden', kind !== 'spectro');
+$('curveCanvas').classList.toggle('hidden', kind !== 'curve');
+$('emptyState').classList.toggle('hidden', kind !== 'empty');
 $('spectroLegend').classList.toggle('hidden', kind !== 'spectro');
 }
 function fitCanvas(canvas) {
@@ -670,21 +702,16 @@ return;
 }
 out[0] = 250; out[1] = 240; out[2] = 220;
 }
-let spectroOff = null;
-function drawSpectro() {
-if (!spectroData) { showVisual('empty'); return; }
-showVisual('spectro');
-const c = fitCanvas($('spectroCanvas'));
-const ctx = c.ctx, w = c.w, h = c.h;
-ctx.clearRect(0, 0, w, h);
+function buildSpectroImage() {
+if (!spectroData) { spectroImg = null; return; }
 const g = spectroData.grid, cols = spectroData.cols, rows = spectroData.rows;
 let maxDb = -Infinity;
 for (let i = 0; i < g.length; i++) if (g[i] > maxDb) maxDb = g[i];
 const floorDb = maxDb - 68;
-if (!spectroOff) spectroOff = document.createElement('canvas');
-spectroOff.width = cols;
-spectroOff.height = rows;
-const octx = spectroOff.getContext('2d');
+const cv = document.createElement('canvas');
+cv.width = cols;
+cv.height = rows;
+const octx = cv.getContext('2d');
 const img = octx.createImageData(cols, rows);
 const rgb = [0, 0, 0];
 for (let y = 0; y < rows; y++) {
@@ -699,16 +726,23 @@ img.data[o + 3] = 255;
 }
 }
 octx.putImageData(img, 0, 0);
+spectroImg = cv;
+}
+function drawSpectro() {
+if (!spectroData || !spectroImg) { showVisual('empty'); return; }
+showVisual('spectro');
+const c = fitCanvas($('spectroCanvas'));
+const ctx = c.ctx, w = c.w, h = c.h;
+ctx.clearRect(0, 0, w, h);
 const padL = 46, padR = 12, padT = 10, padB = 22;
 const pw = Math.max(1, w - padL - padR), ph = Math.max(1, h - padT - padB);
 ctx.imageSmoothingEnabled = true;
 ctx.imageSmoothingQuality = 'high';
-ctx.drawImage(spectroOff, padL, padT, pw, ph);
+ctx.drawImage(spectroImg, padL, padT, pw, ph);
 ctx.strokeStyle = 'rgba(61,53,46,0.9)';
 ctx.lineWidth = 1;
 ctx.strokeRect(padL + 0.5, padT + 0.5, pw - 1, ph - 1);
 ctx.font = '10px system-ui, sans-serif';
-ctx.fillStyle = 'rgba(168,155,140,0.85)';
 ctx.textAlign = 'right';
 ctx.textBaseline = 'middle';
 const marks = [50, 100, 500, 1000, 5000, 10000, 20000];
@@ -718,15 +752,17 @@ const f = marks[i];
 if (f < spectroData.fMin || f > spectroData.fMax) continue;
 const t = (Math.log(f) - lf0) / (lf1 - lf0);
 const y = padT + ph * (1 - t);
-ctx.strokeStyle = 'rgba(20,18,16,0.45)';
+ctx.strokeStyle = 'rgba(20,18,16,0.4)';
 ctx.beginPath();
 ctx.moveTo(padL, y + 0.5);
 ctx.lineTo(padL + pw, y + 0.5);
 ctx.stroke();
+ctx.fillStyle = 'rgba(168,155,140,0.85)';
 ctx.fillText(f >= 1000 ? (f / 1000) + 'к' : String(f), padL - 7, y);
 }
 ctx.textAlign = 'center';
 ctx.textBaseline = 'top';
+ctx.fillStyle = 'rgba(168,155,140,0.85)';
 const dur = state.resultDuration;
 for (let i = 0; i <= 4; i++) {
 const x = padL + pw * i / 4;
@@ -736,11 +772,30 @@ ctx.textAlign = 'left';
 ctx.fillStyle = 'rgba(107,97,86,0.9)';
 ctx.fillText('Гц', 6, padT - 1);
 }
+function curveModeActive() {
+return state.mode === 'lab' && state.labTool === 'curve';
+}
 function renderCurrentView() {
-if (state.mode === 'lab' && state.labTool === 'curve') { showVisual('curve'); drawCurve(); return; }
+if (curveModeActive() && (stageView === 'curve' || !state.peaks)) { showVisual('curve'); drawCurve(); return; }
 if (!state.peaks) { showVisual('empty'); return; }
-if (stageView === 'spectro' && spectroData) drawSpectro();
-else drawWaveform();
+if (stageView === 'spectro' && spectroData) { drawSpectro(); return; }
+drawWaveform();
+}
+function setStageView(v) {
+stageView = v;
+$('viewToggle').querySelectorAll('.view-btn').forEach(function (b) {
+b.classList.toggle('active', b.dataset.view === v);
+});
+renderCurrentView();
+}
+function syncViewToggle() {
+const isCurve = curveModeActive();
+$('viewCurveBtn').classList.toggle('hidden', !isCurve);
+if (isCurve) { if (stageView !== 'curve' && stageView !== 'spectro' && stageView !== 'wave') stageView = 'curve'; }
+else if (stageView === 'curve') stageView = 'wave';
+$('viewToggle').querySelectorAll('.view-btn').forEach(function (b) {
+b.classList.toggle('active', b.dataset.view === stageView);
+});
 }
 function renderAnalysis(a) {
 const el = $('analysis');
@@ -749,8 +804,7 @@ const chips = [];
 chips.push('<span class="chip"><span>Пик</span><b>' + fmtDb(a.peakDb) + ' dBFS</b></span>');
 chips.push('<span class="chip"><span>RMS</span><b>' + fmtDb(a.rmsDb) + ' dBFS</b></span>');
 if (isFinite(a.lufs)) chips.push('<span class="chip"><span>LUFS</span><b>' + fmtDb(a.lufs) + '</b></span>');
-const dcBad = Math.abs(a.dc) > 0.001;
-chips.push('<span class="chip' + (dcBad ? ' warn' : '') + '"><span>DC</span><b>' + fmtDc(a.dc) + '</b></span>');
+chips.push('<span class="chip' + (Math.abs(a.dc) > 0.001 ? ' warn' : '') + '"><span>DC</span><b>' + fmtDc(a.dc) + '</b></span>');
 if (a.clipped > 0) chips.push('<span class="chip bad"><span>Клиппинг</span><b>' + a.clipped + ' отсч.</b></span>');
 else chips.push('<span class="chip ok"><b>Клиппинга нет</b></span>');
 if (a.limited) chips.push('<span class="chip warn"><b>Уровень ограничен по пику</b></span>');
@@ -769,6 +823,8 @@ const loopFade = loop ? Math.max(1, Math.min(Math.floor(sr * 0.25), Math.floor(b
 const genTotal = body + loopFade;
 const total = padA + body + padB;
 const seed = spec.seed;
+const isMp3 = spec.format === 'mp3';
+const outSr = isMp3 ? mp3TargetRate(sr) : sr;
 const bufs = [];
 for (let c = 0; c < ch; c++) bufs.push(new Float32Array(CHUNK));
 const mkGens = function () {
@@ -794,16 +850,14 @@ if (fo > 0 && idx < body && idx >= body - fo) g *= (body - 1 - idx) / fo;
 for (let c = 0; c < ch; c++) {
 const v = bufs[c][i] * g;
 bufs[c][i] = v;
-if (loop) {
-if (idx < loopFade) head[c][idx] = v;
-else if (idx >= body) tail[c][idx - body] = v;
-}
+if (loop && idx >= body) { tail[c][idx - body] = v; continue; }
+if (loop && idx < loopFade) head[c][idx] = v;
 const a = v < 0 ? -v : v;
 if (a > peak) peak = a;
 sumSq += v * v;
 }
 }
-if (lufs) lufs.feed(bufs, n);
+if (lufs && pos < body) lufs.feed(bufs, Math.min(n, body - pos));
 pos += n;
 if (performance.now() - t0 > SLICE_MS) {
 job.progress(0.42 * pos / genTotal, 'Анализ уровня');
@@ -829,25 +883,24 @@ if (rms > 1e-9) gain = Math.pow(10, spec.normTarget / 20) / rms;
 } else if (spec.normMode === 'lufs') {
 if (isFinite(measuredLufs)) gain = Math.pow(10, (spec.normTarget - measuredLufs) / 20);
 else if (rms > 1e-9) gain = Math.pow(10, spec.normTarget / 20) / rms;
-} else {
-if (peak > 1e-9) gain = Math.pow(10, spec.normTarget / 20) / peak;
-}
+} else if (peak > 1e-9) gain = Math.pow(10, spec.normTarget / 20) / peak;
 if (peak * gain > CEILING && peak > 1e-9) { gain = CEILING / peak; limited = true; }
 
 gens = mkGens();
-const sink = spec.format === 'mp3'
-? createMp3Sink(sr, ch, spec.mp3Bitrate)
-: createWavSink(sr, ch, spec.bitDepth, total);
-const spectro = createSpectro(sr, total);
+const sink = isMp3 ? createMp3Sink(outSr, ch, spec.mp3Bitrate) : createWavSink(sr, ch, spec.bitDepth, total);
+const ratio = outSr / sr;
+const spectro = createSpectro(outSr, ratio === 1 ? total : Math.round(total * ratio));
 const mn = new Float32Array(BUCKETS), mx = new Float32Array(BUCKETS);
-const bucketStep = BUCKETS / total;
-let fPeak = 0, fSum = 0, fSumSq = 0, clipped = 0, frame = 0;
+const outTotal = ratio === 1 ? total : Math.max(1, Math.round(total * ratio));
+const bucketStep = BUCKETS / outTotal;
+const step = isMp3 ? MP3_CHUNK : CHUNK;
+let fPeak = 0, fSum = 0, fSumSq = 0, clipped = 0, frame = 0, written = 0;
 t0 = performance.now();
 while (frame < total) {
 let limit = total;
 if (frame < padA) limit = padA;
 else if (frame < padA + body) limit = padA + body;
-const n = Math.min(CHUNK, limit - frame);
+const n = Math.min(step, limit - frame);
 const inBody = frame >= padA && frame < padA + body;
 if (inBody) {
 for (let c = 0; c < ch; c++) gens[c](bufs[c], n);
@@ -884,8 +937,9 @@ fSumSq += v * v;
 spectro.feed(bufs, n, frame);
 sink.write(bufs, n);
 frame += n;
+written += n;
 if (performance.now() - t0 > SLICE_MS) {
-job.progress(0.42 + 0.56 * frame / total, spec.format === 'mp3' ? 'Кодирование MP3' : 'Кодирование WAV');
+job.progress(0.42 + 0.56 * frame / total, isMp3 ? 'Кодирование MP3' : 'Кодирование WAV');
 await yieldToUI();
 t0 = performance.now();
 }
@@ -898,7 +952,7 @@ ext: sink.ext,
 peaks: { min: mn, max: mx },
 spectro: spectro.result(),
 duration: total / sr,
-sr: sr,
+sr: outSr,
 analysis: {
 peakDb: 20 * Math.log10(Math.max(fPeak, 1e-12)),
 rmsDb: 20 * Math.log10(Math.max(Math.sqrt(fSumSq / count), 1e-12)),
@@ -910,24 +964,38 @@ limited: limited
 };
 }
 
-async function encodeArrays(arrays, sr, opts, gain, job, from, to) {
+async function encodeArrays(arrays, sr, opts, gain, job, from, to, extra) {
 const ch = arrays.length;
-const total = arrays[0].length;
-const sink = opts.format === 'mp3'
-? createMp3Sink(sr, ch, opts.mp3Bitrate)
-: createWavSink(sr, ch, opts.bitDepth, total);
-const spectro = createSpectro(sr, total);
+const srcLen = arrays[0].length;
+const isMp3 = opts.format === 'mp3';
+const outSr = isMp3 ? mp3TargetRate(sr) : sr;
+const ratio = outSr / sr;
+const total = ratio === 1 ? srcLen : Math.max(1, Math.round(srcLen * ratio));
+const sink = isMp3 ? createMp3Sink(outSr, ch, opts.mp3Bitrate) : createWavSink(sr, ch, opts.bitDepth, total);
+const spectro = createSpectro(outSr, total);
 const bufs = [];
 for (let c = 0; c < ch; c++) bufs.push(new Float32Array(CHUNK));
 const mn = new Float32Array(BUCKETS), mx = new Float32Array(BUCKETS);
 const bucketStep = BUCKETS / total;
+const step = isMp3 ? MP3_CHUNK : CHUNK;
 let fPeak = 0, fSum = 0, fSumSq = 0, clipped = 0, frame = 0;
 let t0 = performance.now();
 while (frame < total) {
-const n = Math.min(CHUNK, total - frame);
+const n = Math.min(step, total - frame);
 for (let c = 0; c < ch; c++) {
 const src = arrays[c], dst = bufs[c];
+if (ratio === 1) {
 for (let i = 0; i < n; i++) dst[i] = src[frame + i] * gain;
+} else {
+for (let i = 0; i < n; i++) {
+const p = (frame + i) / ratio;
+const i0 = Math.floor(p);
+const t = p - i0;
+const a = src[i0 < srcLen ? i0 : srcLen - 1];
+const b = src[i0 + 1 < srcLen ? i0 + 1 : srcLen - 1];
+dst[i] = (a + (b - a) * t) * gain;
+}
+}
 }
 for (let i = 0; i < n; i++) {
 const bucket = Math.min(BUCKETS - 1, ((frame + i) * bucketStep) | 0);
@@ -946,24 +1014,25 @@ spectro.feed(bufs, n, frame);
 sink.write(bufs, n);
 frame += n;
 if (performance.now() - t0 > SLICE_MS) {
-job.progress(from + (to - from) * frame / total, opts.format === 'mp3' ? 'Кодирование MP3' : 'Кодирование WAV');
+job.progress(from + (to - from) * frame / total, isMp3 ? 'Кодирование MP3' : 'Кодирование WAV');
 await yieldToUI();
 t0 = performance.now();
 }
 }
 const blob = sink.finish();
 const count = total * ch;
+const lufsIn = extra && isFinite(extra.lufs) ? extra.lufs : NaN;
 return {
 blob: blob,
 ext: sink.ext,
 peaks: { min: mn, max: mx },
 spectro: spectro.result(),
-duration: total / sr,
-sr: sr,
+duration: total / outSr,
+sr: outSr,
 analysis: {
 peakDb: 20 * Math.log10(Math.max(fPeak, 1e-12)),
 rmsDb: 20 * Math.log10(Math.max(Math.sqrt(fSumSq / count), 1e-12)),
-lufs: NaN,
+lufs: isFinite(lufsIn) ? lufsIn + 20 * Math.log10(Math.max(gain, 1e-12)) : NaN,
 dc: fSum / count,
 clipped: clipped,
 limited: false
@@ -1017,15 +1086,54 @@ seekBar.addEventListener('pointercancel', endSeek);
 seekBar.addEventListener('change', endSeek);
 window.addEventListener('pointerup', endSeek);
 window.addEventListener('blur', endSeek);
-$('downloadBtn').addEventListener('click', function () {
-if (!state.blobUrl) return;
+
+function triggerDownload(blob, ext, duration, sr) {
+const url = URL.createObjectURL(blob);
 const a = document.createElement('a');
-a.href = state.blobUrl;
-a.download = 'wnl-' + state.resultKey + '-' + Math.round(state.resultDuration) + 's-' + state.resultSr + 'hz-' + stamp() + '.' + state.resultExt;
+a.href = url;
+a.download = 'wnl-' + state.resultKey + '-' + Math.round(duration) + 's-' + sr + 'hz-' + stamp() + '.' + ext;
 document.body.appendChild(a);
 a.click();
 document.body.removeChild(a);
+setTimeout(function () { URL.revokeObjectURL(url); }, 20000);
+}
+async function downloadAs(format, btn) {
+if (!state.blob) return;
+if (state.resultExt === format) {
+triggerDownload(state.blob, format, state.resultDuration, state.resultSr);
+return;
+}
+runJob(btn, 'Готовим…', async function (job) {
+if (format === 'mp3') { progressBusy('Загрузка MP3-кодировщика'); await ensureLame(); }
+progressBusy('Чтение результата');
+await yieldToUI();
+const ab = await readBuffer(state.blob);
+progressBusy('Декодирование');
+await yieldToUI();
+const ctx = await ensureCtx();
+let decoded;
+try { decoded = await ctx.decodeAudioData(ab); }
+catch (e) { throw new Error('Не удалось разобрать текущий результат'); }
+const sr = decoded.sampleRate;
+const len = decoded.length;
+const ch = Math.min(2, decoded.numberOfChannels);
+if (len * ch * 4 > DECODE_LIMIT) throw new Error('Результат слишком длинный для конвертации — сгенерируйте файл короче');
+const outSr = format === 'mp3' ? mp3TargetRate(sr) : sr;
+const size = estimateSize(len / sr, outSr, ch, state.bitDepth, format, state.mp3Bitrate);
+if (size > SIZE_LIMIT) throw new Error('Файл получится ' + fmtSize(size) + ' — уменьшите длительность или разрядность');
+const arrays = [];
+for (let c = 0; c < ch; c++) arrays.push(decoded.getChannelData(c));
+const res = await encodeArrays(arrays, sr, {
+format: format, bitDepth: state.bitDepth, mp3Bitrate: state.mp3Bitrate
+}, 1, job, 0.15, 1);
+triggerDownload(res.blob, res.ext, res.duration, res.sr);
+arrays.length = 0;
+decoded = null;
 });
+}
+$('dlWavBtn').addEventListener('click', function () { downloadAs('wav', $('dlWavBtn')); });
+$('dlMp3Btn').addEventListener('click', function () { downloadAs('mp3', $('dlMp3Btn')); });
+
 function setLoop(on) {
 state.loop = on;
 audioEl.loop = on;
@@ -1045,13 +1153,11 @@ $('loopToggle').addEventListener('change', function () { setLoop($('loopToggle')
 $('loopBtn').addEventListener('click', function () { setLoop(!state.loop); });
 $('viewToggle').addEventListener('click', function (e) {
 const btn = e.target.closest('.view-btn');
-if (!btn) return;
-stageView = btn.dataset.view;
-$('viewToggle').querySelectorAll('.view-btn').forEach(function (b) { b.classList.toggle('active', b === btn); });
-renderCurrentView();
+if (!btn || btn.disabled) return;
+setStageView(btn.dataset.view);
 });
 
-function applyResult(res, meta, key) {
+function applyResult(res, meta, key, allowMp3) {
 audioEl.pause();
 const old = state.blobUrl;
 state.blob = res.blob;
@@ -1061,18 +1167,19 @@ state.resultDuration = res.duration;
 state.resultSr = res.sr;
 state.resultExt = res.ext;
 state.resultKey = key;
+state.allowMp3 = allowMp3 !== false;
 spectroData = res.spectro;
+buildSpectroImage();
 audioEl.src = state.blobUrl;
 audioEl.loop = state.loop;
 if (old) URL.revokeObjectURL(old);
-$('playBtn').disabled = false;
-$('downloadBtn').disabled = false;
-$('downloadLabel').textContent = 'Скачать ' + res.ext.toUpperCase();
 seekBar.disabled = false;
 seekBar.value = 0;
 $('stageMeta').textContent = meta + ' · ' + fmtSize(res.blob.size);
 $('timeDisplay').textContent = '0:00 / ' + fmtTime(res.duration);
 renderAnalysis(res.analysis);
+syncViewToggle();
+refreshButtons();
 renderCurrentView();
 }
 
@@ -1086,12 +1193,21 @@ $('synthBtn').disabled = b;
 $('percBtn').disabled = b;
 $('ditherNo').disabled = b;
 $('ditherYes').disabled = b;
+$('playBtn').disabled = !state.blobUrl;
+$('dlWavBtn').disabled = b || !state.blob;
+$('dlMp3Btn').disabled = b || !state.blob;
+$('dlMp3Btn').classList.toggle('hidden', !state.allowMp3);
+$('mp3RateSelect').classList.toggle('hidden', !state.allowMp3);
+$('viewToggle').querySelectorAll('.view-btn').forEach(function (btn) {
+if (btn.dataset.view === 'curve') btn.disabled = false;
+else btn.disabled = !state.peaks;
+});
 }
 async function runJob(btn, busyText, fn) {
 if (state.busy) return;
 state.busy = true;
-const original = btn.textContent;
-btn.textContent = busyText;
+const original = btn.innerHTML;
+btn.innerHTML = busyText;
 refreshButtons();
 progressBusy(busyText);
 try {
@@ -1100,9 +1216,9 @@ await fn({ progress: progressSet });
 progressDone('Готово');
 } catch (e) {
 console.error(e);
-progressFail(e && e.message ? e.message : 'Неизвестная ошибка');
+progressFail(friendlyError(e));
 } finally {
-btn.textContent = original;
+btn.innerHTML = original;
 state.busy = false;
 refreshButtons();
 }
@@ -1165,6 +1281,12 @@ el.classList.remove('warn');
 el.textContent = 'Примерный размер: ' + fmtSize(size) + ' · ' + fmtTime(total) + ' · ' + (state.channels === 2 ? 'стерео' : 'моно') + (loop ? ' · по кругу' : '');
 }
 refreshButtons();
+}
+function setMp3Bitrate(v) {
+state.mp3Bitrate = v;
+$('mp3BitrateSelect').value = String(v);
+$('mp3RateSelect').value = String(v);
+syncFormatUI();
 }
 function syncFormatUI() {
 const mp3 = state.format === 'mp3';
@@ -1236,7 +1358,8 @@ bindSlider('synthDur', 'synthDurNum', 'synthDur', 5, 600);
 
 $('sampleRateSelect').addEventListener('change', function () { state.sampleRate = parseInt($('sampleRateSelect').value, 10); updateEstimate(); });
 $('bitDepthSelect').addEventListener('change', function () { state.bitDepth = parseInt($('bitDepthSelect').value, 10); syncFormatUI(); });
-$('mp3BitrateSelect').addEventListener('change', function () { state.mp3Bitrate = parseInt($('mp3BitrateSelect').value, 10); syncFormatUI(); });
+$('mp3BitrateSelect').addEventListener('change', function () { setMp3Bitrate(parseInt($('mp3BitrateSelect').value, 10)); });
+$('mp3RateSelect').addEventListener('change', function () { setMp3Bitrate(parseInt($('mp3RateSelect').value, 10)); });
 $('normModeSelect').addEventListener('change', function () { setNormMode($('normModeSelect').value); });
 $('formatSegmented').addEventListener('click', function (e) {
 const btn = e.target.closest('.seg'); if (!btn) return;
@@ -1267,19 +1390,20 @@ const body = Math.max(1, Math.round(dur * sr));
 const total = padA + body + padB;
 const type = state.type;
 const out = currentOutput();
+const fadeIn = state.fadeIn, fadeOut = state.fadeOut;
+const normMode = state.normMode, normTarget = state.normTarget;
 const size = estimateSize(total / sr, sr, ch, out.bitDepth, out.format, out.mp3Bitrate);
 if (size > SIZE_LIMIT) { progressFail('Слишком большой файл: ' + fmtSize(size)); return; }
 runJob($('generateBtn'), 'Генерация…', async function (job) {
-if (out.format === 'mp3') { job.progress(0.005, 'Загрузка MP3-кодировщика'); await ensureLame(); }
+if (out.format === 'mp3') { progressBusy('Загрузка MP3-кодировщика'); await ensureLame(); }
 const res = await renderStream({
 sr: sr, channels: ch, format: out.format, bitDepth: out.bitDepth, mp3Bitrate: out.mp3Bitrate,
 bodyFrames: body, padA: padA, padB: padB,
-fadeInFrames: Math.round(state.fadeIn * sr), fadeOutFrames: Math.round(state.fadeOut * sr),
-loop: loop, seed: randomSeed(),
-normMode: state.normMode, normTarget: state.normTarget,
+fadeInFrames: Math.round(fadeIn * sr), fadeOutFrames: Math.round(fadeOut * sr),
+loop: loop, seed: randomSeed(), normMode: normMode, normTarget: normTarget,
 makeGen: function (c, s) { return createNoiseGen(type, sr, s); }
 }, job);
-applyResult(res, TYPE_LABELS[type] + ' · ' + fmtTime(res.duration) + ' · ' + sr + ' Гц · ' + (ch === 2 ? 'стерео' : 'моно') + (loop ? ' · по кругу' : ''), type);
+applyResult(res, TYPE_LABELS[type] + ' · ' + fmtTime(res.duration) + ' · ' + res.sr + ' Гц · ' + (ch === 2 ? 'стерео' : 'моно') + (loop ? ' · по кругу' : ''), type, true);
 });
 });
 
@@ -1303,7 +1427,7 @@ if (!f) return;
 state.mixFile = f;
 $('mixFileName').textContent = f.name;
 const info = $('mixInfo');
-if (f.size > 160 * 1024 * 1024) {
+if (f.size > FILE_LIMIT) {
 info.classList.add('warn');
 info.textContent = 'Файл ' + fmtSize(f.size) + ' — слишком большой, выберите трек поменьше';
 } else {
@@ -1321,37 +1445,35 @@ const out = currentOutput();
 const normMode = state.normMode;
 const normTarget = state.normTarget;
 runJob($('mixBtn'), 'Обработка…', async function (job) {
-if (file.size > 160 * 1024 * 1024) throw new Error('Файл больше 160 МБ — выберите трек поменьше');
-if (out.format === 'mp3') { job.progress(0.005, 'Загрузка MP3-кодировщика'); await ensureLame(); }
-job.progress(0.02, 'Чтение файла');
+if (file.size > FILE_LIMIT) throw new Error('Файл больше ' + fmtSize(FILE_LIMIT) + ' — выберите трек поменьше');
+if (out.format === 'mp3') { progressBusy('Загрузка MP3-кодировщика'); await ensureLame(); }
+progressBusy('Чтение файла');
 await yieldToUI();
-const ab = await file.arrayBuffer();
-job.progress(0.06, 'Декодирование');
+const ab = await readBuffer(file);
+progressBusy('Декодирование трека');
 await yieldToUI();
 const ctx = await ensureCtx();
 let decoded;
-try {
-decoded = await ctx.decodeAudioData(ab);
-} catch (e) {
-throw new Error('Не удалось прочитать аудио — поддерживаются WAV, MP3, OGG, M4A, FLAC');
-}
+try { decoded = await ctx.decodeAudioData(ab); }
+catch (e) { throw new Error('Не удалось прочитать аудио — поддерживаются WAV, MP3, OGG, M4A, FLAC'); }
 const sr = decoded.sampleRate;
 const len = decoded.length;
 const ch = Math.min(2, decoded.numberOfChannels);
 if (len / sr > 600) throw new Error('Трек длиннее 10 минут — сначала обрежьте его');
-if (out.format === 'mp3' && sr !== 44100 && sr !== 48000 && sr !== 32000 && sr !== 22050 && sr !== 24000) {
-throw new Error('MP3 не поддерживает частоту ' + sr + ' Гц — выберите WAV');
-}
-if (len * ch * 4 + len * ch * bytesPerSample(out.bitDepth) > SIZE_LIMIT) throw new Error('Трек слишком тяжёлый — выберите 16 бит или трек короче');
+if (len * ch * 4 > DECODE_LIMIT) throw new Error('Трек слишком длинный для частоты ' + sr + ' Гц — обрежьте его или выберите WAV 16 бит');
+const outSr = out.format === 'mp3' ? mp3TargetRate(sr) : sr;
+const outSize = estimateSize(len / sr, outSr, ch, out.bitDepth, out.format, out.mp3Bitrate);
+if (outSize > SIZE_LIMIT) throw new Error('Результат получится ' + fmtSize(outSize) + ' — выберите 16 бит, моно или MP3');
 const arrays = [];
 for (let c = 0; c < ch; c++) arrays.push(decoded.getChannelData(c));
+job.progress(0.1, 'Замер уровня трека');
 let sumSq = 0, t0 = performance.now();
 for (let c = 0; c < ch; c++) {
 const d = arrays[c];
 for (let i = 0; i < len; i++) {
 sumSq += d[i] * d[i];
 if ((i & 65535) === 65535 && performance.now() - t0 > SLICE_MS) {
-job.progress(0.1 + 0.12 * (c + i / len) / ch, 'Замер уровня трека');
+job.progress(0.1 + 0.1 * (c + i / len) / ch, 'Замер уровня трека');
 await yieldToUI();
 t0 = performance.now();
 }
@@ -1369,50 +1491,45 @@ if (noiseRms < 1e-9) throw new Error('Не удалось построить ш�
 const noiseGain = trackRms / (Math.pow(10, -snr / 20) * noiseRms);
 const bufs = [];
 for (let c = 0; c < ch; c++) bufs.push(new Float32Array(CHUNK));
+const gens = [];
+const baseSeed = randomSeed();
+for (let c = 0; c < ch; c++) gens.push(createNoiseGen(type, sr, (baseSeed + c * 7919) >>> 0));
 const lufs = normMode === 'lufs' ? createLufsMeter(sr, ch) : null;
-let peak = 0, mixSq = 0;
+let peak = 0, mixSq = 0, pos = 0;
 t0 = performance.now();
-for (let c = 0; c < ch; c++) {
-const d = arrays[c];
-const gen = createNoiseGen(type, sr, (randomSeed() + c * 7919) >>> 0);
-let pos = 0;
 while (pos < len) {
 const n = Math.min(CHUNK, len - pos);
-gen(bufs[0], n);
+for (let c = 0; c < ch; c++) {
+gens[c](bufs[c], n);
+const d = arrays[c], b = bufs[c];
 for (let i = 0; i < n; i++) {
-const v = d[pos + i] + bufs[0][i] * noiseGain;
+const v = d[pos + i] + b[i] * noiseGain;
 d[pos + i] = v;
-bufs[0][i] = v;
+b[i] = v;
 const a = v < 0 ? -v : v;
 if (a > peak) peak = a;
 mixSq += v * v;
 }
-if (lufs) {
-if (ch === 1) lufs.feed(bufs, n);
-else {
-for (let i = 0; i < n; i++) bufs[1][i] = arrays[1][pos + i];
-lufs.feed(bufs, n);
 }
-}
+if (lufs) lufs.feed(bufs, n);
 pos += n;
 if (performance.now() - t0 > SLICE_MS) {
-job.progress(0.22 + 0.3 * (c + pos / len) / ch, 'Наложение шума');
+job.progress(0.2 + 0.3 * pos / len, 'Наложение шума');
 await yieldToUI();
 t0 = performance.now();
 }
 }
-}
 const rms = Math.sqrt(mixSq / (len * ch));
+const measuredLufs = lufs ? lufs.value() : NaN;
 let gain = 1;
 if (normMode === 'rms') { if (rms > 1e-9) gain = Math.pow(10, normTarget / 20) / rms; }
 else if (normMode === 'lufs') {
-const m = lufs ? lufs.value() : NaN;
-if (isFinite(m)) gain = Math.pow(10, (normTarget - m) / 20);
+if (isFinite(measuredLufs)) gain = Math.pow(10, (normTarget - measuredLufs) / 20);
 else if (rms > 1e-9) gain = Math.pow(10, normTarget / 20) / rms;
-} else { if (peak > 1e-9) gain = Math.pow(10, normTarget / 20) / peak; }
+} else if (peak > 1e-9) gain = Math.pow(10, normTarget / 20) / peak;
 if (peak * gain > CEILING && peak > 1e-9) gain = CEILING / peak;
-const res = await encodeArrays(arrays, sr, out, gain, job, 0.52, 1);
-applyResult(res, 'Наложение · ' + TYPE_LABELS[type] + ' · ' + snr + ' дБ · ' + fmtTime(res.duration), 'mix-' + type);
+const res = await encodeArrays(arrays, sr, out, gain, job, 0.5, 1, { lufs: measuredLufs });
+applyResult(res, 'Наложение · ' + TYPE_LABELS[type] + ' · ' + snr + ' дБ · ' + fmtTime(res.duration), 'mix-' + type, true);
 arrays.length = 0;
 decoded = null;
 });
@@ -1482,6 +1599,12 @@ function attachTimer(s, minutes, el) {
 if (s.timerId) { clearInterval(s.timerId); s.timerId = null; }
 if (s.endTimeout) { clearTimeout(s.endTimeout); s.endTimeout = null; }
 if (!minutes) { el.classList.add('hidden'); return; }
+const t = audioCtx.currentTime;
+try {
+s.master.gain.cancelScheduledValues(t);
+s.master.gain.setValueAtTime(Math.max(0.0001, s.master.gain.value), t);
+s.master.gain.linearRampToValueAtTime(1, t + 0.3);
+} catch (e) {}
 const end = Date.now() + minutes * 60000;
 el.classList.remove('hidden');
 function tick() {
@@ -1692,42 +1815,56 @@ ctx.textAlign = 'left';
 }
 function curveDrawAt(clientX, clientY) {
 const rect = curveCanvas.getBoundingClientRect();
+if (!(rect.width > 0) || !(rect.height > 0)) return;
 const x = (clientX - rect.left) / rect.width;
 const y = (clientY - rect.top) / rect.height;
-const idx = Math.floor(x * curveData.length);
-if (idx < 0 || idx >= curveData.length) return;
+const idx = clamp(Math.floor(x * curveData.length), 0, curveData.length - 1);
 const v = clamp(1 - y, 0, 1);
+if (curveLastIdx >= 0 && curveLastIdx !== idx) {
+const span = idx - curveLastIdx;
+for (let k = Math.min(curveLastIdx, idx); k <= Math.max(curveLastIdx, idx); k++) {
+const t = (k - curveLastIdx) / span;
+curveData[k] = clamp(curveLastVal + (v - curveLastVal) * t, 0, 1);
+}
+} else {
 curveData[idx] = v;
-if (idx > 0) curveData[idx - 1] = Math.max(curveData[idx - 1], v * 0.7);
-if (idx < curveData.length - 1) curveData[idx + 1] = Math.max(curveData[idx + 1], v * 0.7);
+}
+curveLastIdx = idx;
+curveLastVal = v;
 drawCurve();
 }
 curveCanvas.addEventListener('pointerdown', function (e) {
 curveDrawing = true;
+curveLastIdx = -1;
 try { curveCanvas.setPointerCapture(e.pointerId); } catch (err) {}
 curveDrawAt(e.clientX, e.clientY);
 });
 curveCanvas.addEventListener('pointermove', function (e) { if (curveDrawing) curveDrawAt(e.clientX, e.clientY); });
-curveCanvas.addEventListener('pointerup', function () { curveDrawing = false; });
-curveCanvas.addEventListener('pointercancel', function () { curveDrawing = false; });
-$('curveReset').addEventListener('click', function () { curveData.fill(0.5); drawCurve(); });
+curveCanvas.addEventListener('pointerup', function () { curveDrawing = false; curveLastIdx = -1; });
+curveCanvas.addEventListener('pointercancel', function () { curveDrawing = false; curveLastIdx = -1; });
+$('curveReset').addEventListener('click', function () {
+curveData.fill(0.5);
+curveLastIdx = -1;
+drawCurve();
+});
 $('curveGen').addEventListener('click', function () {
 const sr = state.sampleRate;
 const dur = state.curveDur;
 const snapshot = Float32Array.from(curveData);
 const out = currentOutput();
+const normMode = state.normMode, normTarget = state.normTarget;
 const size = estimateSize(dur, sr, 1, out.bitDepth, out.format, out.mp3Bitrate);
 if (size > SIZE_LIMIT) { progressFail('Слишком большой файл: ' + fmtSize(size)); return; }
 runJob($('curveGen'), 'Генерация…', async function (job) {
-if (out.format === 'mp3') { job.progress(0.005, 'Загрузка MP3-кодировщика'); await ensureLame(); }
+if (out.format === 'mp3') { progressBusy('Загрузка MP3-кодировщика'); await ensureLame(); }
 const res = await renderStream({
 sr: sr, channels: 1, format: out.format, bitDepth: out.bitDepth, mp3Bitrate: out.mp3Bitrate,
 bodyFrames: Math.round(dur * sr), padA: 0, padB: 0,
 fadeInFrames: 0, fadeOutFrames: 0, loop: false,
-seed: randomSeed(), normMode: state.normMode, normTarget: state.normTarget,
+seed: randomSeed(), normMode: normMode, normTarget: normTarget,
 makeGen: function (c, s) { return filteredGen(buildCurveFilters(snapshot, sr), makeRng(s)); }
 }, job);
-applyResult(res, 'Кривая · ' + fmtTime(res.duration) + ' · ' + sr + ' Гц', 'curve');
+applyResult(res, 'Кривая · ' + fmtTime(res.duration) + ' · ' + res.sr + ' Гц', 'curve', true);
 });
 });
 
@@ -1747,6 +1884,7 @@ const dv = new DataView(ab);
 let clipped = 0, peak = 0, sum = 0, sumSq = 0;
 const mn = new Float32Array(BUCKETS), mx = new Float32Array(BUCKETS);
 const step = BUCKETS / len;
+const spectro = createSpectro(sr, len);
 for (let i = 0; i < len; i++) {
 const v = ch[i];
 writer(dv, i * 2, v);
@@ -1758,16 +1896,13 @@ if (a > peak) peak = a;
 if (a > 1) clipped++;
 sum += v; sumSq += v * v;
 }
-const blob = new Blob([wavHeader(sr, 1, 16, len * 2), new Uint8Array(ab)], { type: 'audio/wav' });
-const spectro = createSpectro(sr, len);
-const bufs = [ch];
 let f = 0;
 while (f < len) {
 const n = Math.min(CHUNK, len - f);
-const view = [ch.subarray(f, f + n)];
-spectro.feed(view, n, f);
+spectro.feed([ch.subarray(f, f + n)], n, f);
 f += n;
 }
+const blob = new Blob([wavHeader(sr, 1, 16, len * 2), new Uint8Array(ab)], { type: 'audio/wav' });
 applyResult({
 blob: blob, ext: 'wav', peaks: { min: mn, max: mx }, spectro: spectro.result(),
 duration: len / sr, sr: sr,
@@ -1776,7 +1911,7 @@ peakDb: 20 * Math.log10(Math.max(peak, 1e-12)),
 rmsDb: 20 * Math.log10(Math.max(Math.sqrt(sumSq / len), 1e-12)),
 lufs: NaN, dc: sum / len, clipped: clipped, limited: false
 }
-}, 'Тихий тон −60 dBFS · ' + (dither ? 'с дизерингом' : 'без дизеринга'), dither ? 'sine-dither' : 'sine-nodither');
+}, 'Тихий тон −60 dBFS · ' + (dither ? 'с дизерингом' : 'без дизеринга'), dither ? 'sine-dither' : 'sine-nodither', false);
 }
 $('ditherNo').addEventListener('click', function () { ditherResult(false); });
 $('ditherYes').addEventListener('click', function () { ditherResult(true); });
@@ -1792,7 +1927,7 @@ fadeInFrames: 0, fadeOutFrames: 0, loop: false,
 seed: randomSeed(), normMode: 'rms', normTarget: -20,
 makeGen: function (c, s) { return createNoiseGen('pink', sr, s); }
 }, job);
-applyResult(res, 'Калибровка · розовый −20 dBFS RMS · ' + fmtTime(res.duration), 'calib');
+applyResult(res, 'Калибровка · розовый −20 dBFS RMS · ' + fmtTime(res.duration), 'calib', false);
 });
 });
 
@@ -1808,25 +1943,26 @@ const sr = state.sampleRate;
 const dur = state.synthDur;
 const kind = state.synthType;
 const out = currentOutput();
+const normMode = state.normMode, normTarget = state.normTarget;
 const size = estimateSize(dur, sr, 2, out.bitDepth, out.format, out.mp3Bitrate);
 if (size > SIZE_LIMIT) { progressFail('Слишком большой файл: ' + fmtSize(size)); return; }
 runJob($('synthBtn'), 'Генерация…', async function (job) {
-if (out.format === 'mp3') { job.progress(0.005, 'Загрузка MP3-кодировщика'); await ensureLame(); }
+if (out.format === 'mp3') { progressBusy('Загрузка MP3-кодировщика'); await ensureLame(); }
 const res = await renderStream({
 sr: sr, channels: 2, format: out.format, bitDepth: out.bitDepth, mp3Bitrate: out.mp3Bitrate,
 bodyFrames: Math.round(dur * sr), padA: 0, padB: 0,
 fadeInFrames: Math.round(0.3 * sr), fadeOutFrames: Math.round(0.5 * sr), loop: false,
-seed: randomSeed(), normMode: state.normMode, normTarget: state.normTarget,
+seed: randomSeed(), normMode: normMode, normTarget: normTarget,
 makeGen: function (c, s) { return createSynthGen(kind, sr, s); }
 }, job);
-applyResult(res, SYNTH_LABELS[kind] + ' · ' + fmtTime(res.duration) + ' · ' + sr + ' Гц', 'synth-' + kind);
+applyResult(res, SYNTH_LABELS[kind] + ' · ' + fmtTime(res.duration) + ' · ' + res.sr + ' Гц', 'synth-' + kind, true);
 });
 });
 
 function makePercussion(kind, sr, seed) {
 const rnd = makeRng(seed);
 if (kind === 'kick') {
-const n = Math.floor(sr * 0.45);
+const n = Math.max(1, Math.floor(sr * 0.45));
 const out = new Float32Array(n);
 const f0 = 130 + rnd() * 40, fEnd = 44 + rnd() * 8;
 let phase = 0;
@@ -1842,7 +1978,7 @@ out[i] = Math.tanh((Math.sin(phase) * env + click) * 1.4) * 0.9;
 return out;
 }
 if (kind === 'snare') {
-const n = Math.floor(sr * 0.3);
+const n = Math.max(1, Math.floor(sr * 0.3));
 const out = new Float32Array(n);
 const bp = biquad('bandpass', 1900 + rnd() * 300, 0.8, 0, sr);
 const hp = biquad('highpass', 500, 0.7, 0, sr);
@@ -1858,7 +1994,7 @@ out[i] = (nz * 0.85 + tone * 0.5) * (1 - Math.exp(-t * 600));
 }
 return out;
 }
-const n = Math.floor(sr * 0.11);
+const n = Math.max(1, Math.floor(sr * 0.11));
 const out = new Float32Array(n);
 const hp = biquad('highpass', 7000 + rnd() * 1500, 0.7, 0, sr);
 const bp = biquad('bandpass', 10000 + rnd() * 2000, 1.1, 0, sr);
@@ -1881,7 +2017,7 @@ const sr = state.sampleRate;
 const kind = state.percType;
 const out = currentOutput();
 runJob($('percBtn'), 'Генерация…', async function (job) {
-if (out.format === 'mp3') { job.progress(0.005, 'Загрузка MP3-кодировщика'); await ensureLame(); }
+if (out.format === 'mp3') { progressBusy('Загрузка MP3-кодировщика'); await ensureLame(); }
 job.progress(0.25, 'Сборка удара');
 await yieldToUI();
 const arr = makePercussion(kind, sr, randomSeed());
@@ -1889,7 +2025,7 @@ let peak = 0;
 for (let i = 0; i < arr.length; i++) { const a = Math.abs(arr[i]); if (a > peak) peak = a; }
 const gain = peak > 1e-9 ? Math.pow(10, -1 / 20) / peak : 1;
 const res = await encodeArrays([arr], sr, out, gain, job, 0.45, 1);
-applyResult(res, PERC_LABELS[kind] + ' · ' + (arr.length / sr).toFixed(2) + ' сек', 'perc-' + kind);
+applyResult(res, PERC_LABELS[kind] + ' · ' + (arr.length / sr).toFixed(2) + ' сек', 'perc-' + kind, true);
 });
 });
 
@@ -1904,6 +2040,8 @@ $('generatorSidebar').classList.toggle('hidden', state.mode !== 'generate');
 $('mixSidebar').classList.toggle('hidden', state.mode !== 'mix');
 $('labSidebar').classList.toggle('hidden', state.mode !== 'lab');
 $('stageLabel').textContent = state.mode === 'mix' ? 'Наложение' : (state.mode === 'lab' ? 'Лаборатория' : 'Визуализация');
+if (curveModeActive()) stageView = 'curve';
+syncViewToggle();
 renderCurrentView();
 });
 $('labTools').addEventListener('click', function (e) {
@@ -1917,6 +2055,8 @@ state.labTool = btn.dataset.tool;
 document.querySelectorAll('.lab-panel').forEach(function (p) {
 p.classList.toggle('hidden', p.dataset.panel !== state.labTool);
 });
+if (curveModeActive()) stageView = 'curve';
+syncViewToggle();
 renderCurrentView();
 });
 
@@ -1940,22 +2080,25 @@ seekBy(-1e9);
 }
 });
 
-function handleResize() { renderCurrentView(); }
 if (typeof ResizeObserver === 'function') {
 new ResizeObserver(function () {
 if (resizeRaf) cancelAnimationFrame(resizeRaf);
-resizeRaf = requestAnimationFrame(function () { resizeRaf = 0; handleResize(); });
+resizeRaf = requestAnimationFrame(function () { resizeRaf = 0; renderCurrentView(); });
 }).observe($('visualizer'));
+new ResizeObserver(measureRail).observe($('progressTrack'));
 } else {
-window.addEventListener('resize', handleResize);
+window.addEventListener('resize', function () { renderCurrentView(); measureRail(); });
 }
 window.addEventListener('beforeunload', function () {
 if (state.blobUrl) URL.revokeObjectURL(state.blobUrl);
 });
 
 setNormMode('peak');
+setMp3Bitrate(192);
 setLoop(false);
 syncFormatUI();
+syncViewToggle();
 refreshButtons();
+measureRail();
 showVisual('empty');
 })();
