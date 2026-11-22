@@ -50,6 +50,67 @@ return y;
 function rawBq(b0, b1, b2, a0, a1, a2) {
 return { b0: b0 / a0, b1: b1 / a0, b2: b2 / a0, a1: a1 / a0, a2: a2 / a0, x1: 0, x2: 0, y1: 0, y2: 0 };
 }
+function reverbNew(sr, ch, key, wet) {
+const P = {
+room: { size: 0.56, damp: 0.52, pre: 0.008, width: 0.55 },
+hall: { size: 0.78, damp: 0.34, pre: 0.020, width: 0.9 },
+opera: { size: 0.86, damp: 0.27, pre: 0.030, width: 1.0 },
+cathedral: { size: 0.94, damp: 0.19, pre: 0.045, width: 1.0 },
+parking: { size: 0.82, damp: 0.63, pre: 0.014, width: 0.8 },
+tunnel: { size: 0.90, damp: 0.46, pre: 0.050, width: 0.65 }
+}[key] || { size: 0.78, damp: 0.34, pre: 0.020, width: 0.9 };
+const sc = sr / 44100;
+const fb = 0.30 + P.size * 0.66;
+const damp = clamp(P.damp, 0, 0.9) * 0.45;
+const w = clamp(wet, 0, 1);
+const combT = [1116, 1188, 1277, 1356];
+const apT = [556, 441, 225];
+const pre = Math.max(1, Math.round(P.pre * sr));
+const erD = [Math.max(1, Math.round(0.017 * sr)), Math.max(2, Math.round(0.029 * sr)), Math.max(3, Math.round(0.043 * sr))];
+const dlN = Math.max(pre, erD[2]) + 2;
+const chans = [];
+for (let c = 0; c < ch; c++) {
+const off = Math.round(c * 23 * P.width * sc);
+const combs = [];
+for (let i = 0; i < combT.length; i++) { const n = Math.max(4, Math.round(combT[i] * sc) + off); combs.push({ b: new Float32Array(n), n: n, i: 0, s: 0 }); }
+const aps = [];
+for (let i = 0; i < apT.length; i++) { const n = Math.max(4, Math.round(apT[i] * sc) + off); aps.push({ b: new Float32Array(n), n: n, i: 0 }); }
+chans.push({ combs: combs, aps: aps, dl: new Float32Array(dlN), di: 0 });
+}
+return {
+process: function (bufs, n) {
+const nch = Math.min(ch, bufs.length);
+for (let i = 0; i < n; i++) {
+for (let c = 0; c < nch; c++) {
+const st = chans[c], dry = bufs[c][i];
+st.dl[st.di] = dry;
+const rd = function (d) { return st.dl[(st.di - d + dlN * 2) % dlN]; };
+let inp = rd(pre) + 0.34 * rd(erD[0]) + 0.24 * rd(erD[1]) + 0.16 * rd(erD[2]);
+st.di = (st.di + 1) % dlN;
+inp *= 0.32;
+let acc = 0;
+for (let k = 0; k < st.combs.length; k++) {
+const cm = st.combs[k];
+const y = cm.b[cm.i];
+cm.s = y * (1 - damp) + cm.s * damp;
+cm.b[cm.i] = inp + cm.s * fb;
+cm.i = (cm.i + 1) % cm.n;
+acc += y;
+}
+for (let k = 0; k < st.aps.length; k++) {
+const ap = st.aps[k];
+const buf = ap.b[ap.i];
+const y = -acc + buf;
+ap.b[ap.i] = acc + buf * 0.5;
+ap.i = (ap.i + 1) % ap.n;
+acc = y;
+}
+bufs[c][i] = dry * (1 - w * 0.55) + acc * w * 0.42;
+}
+}
+}
+};
+}
 function fftMake(n) {
 const levels = Math.round(Math.log2(n));
 const rev = new Uint32Array(n);
@@ -97,6 +158,12 @@ return v <= 0.008 ? -80 : (v - 0.5) * 48;
 function magFor(type, tilt, sr, curve) {
 const fMin = 20, fMax = Math.min(20000, sr * 0.47);
 const tl = tilt || 0;
+let matchRef = 1;
+if (type === 'match' && curve && curve.length) {
+let mx = 0;
+for (let i = 0; i < curve.length; i++) if (curve[i] > mx) mx = curve[i];
+matchRef = mx > 1e-20 ? mx : 1;
+}
 return function (f) {
 if (f <= 0) return 0;
 const hp = 1 / (1 + Math.pow(fMin / f, 4));
@@ -111,6 +178,15 @@ else if (type === 'green') { const l = Math.log(f / 500) / LN2; a = Math.exp(-(l
 else if (type === 'grey') a = Math.pow(10, (greyDb(f) - GREY_REF) / 20);
 else if (type === 'curve') a = Math.pow(10, curveDbAt(curve, f, fMin, fMax) / 20);
 else if (type === 'pinkband') a = (f >= 500 && f <= 2000) ? Math.pow(f / 1000, -0.5) : 0;
+else if (type === 'match') {
+if (!curve || !curve.length) return 0;
+const N = curve.length * 2;
+const k = f * N / sr;
+if (k >= curve.length - 1) return 0;
+const i = Math.max(0, Math.floor(k)), fr = k - i;
+const p0 = curve[i], p1 = curve[Math.min(curve.length - 1, i + 1)];
+a = Math.sqrt(Math.max(p0 + (p1 - p0) * fr, 0) / matchRef);
+}
 if (type !== 'alpha' && type !== 'curve' && Math.abs(tl) > 0.02) a *= Math.pow(f / 1000, -tl / 2);
 return a * hp * lp;
 };
@@ -150,6 +226,37 @@ for (let j = 0; j < L; j++) outBuf[j] = xr[L + j];
 pos = 0;
 }
 return function (out, n) { for (let i = 0; i < n; i++) { if (pos >= L) block(); out[i] = outBuf[pos++]; } };
+}
+function granularGen(src, sr, seed, grainMs) {
+const r = rng(seed);
+const base = Math.max(256, Math.round(sr * clamp(grainMs, 20, 400) / 1000));
+const hop = Math.max(64, base >> 2);
+const voices = [];
+let outIdx = 0, nextStart = 0;
+const srcLen = src.length;
+return function (out, n) {
+for (let i = 0; i < n; i++) {
+if (outIdx >= nextStart) {
+const len = Math.max(128, Math.round(base * (0.7 + r() * 0.7)));
+const rate = 0.85 + r() * 0.3;
+const room = srcLen - Math.ceil(len * rate) - 2;
+voices.push({ p: room > 1 ? r() * room : 0, rate: rate, t: 0, len: len, g: 0.55 + r() * 0.45 });
+nextStart += hop;
+}
+let s = 0;
+for (let k = voices.length - 1; k >= 0; k--) {
+const v = voices[k];
+const x = v.t / v.len;
+const env = 0.5 - 0.5 * Math.cos(2 * Math.PI * x);
+const i0 = Math.floor(v.p);
+if (i0 >= 0 && i0 < srcLen - 1) s += (src[i0] + (src[i0 + 1] - src[i0]) * (v.p - i0)) * env * v.g;
+v.p += v.rate; v.t++;
+if (v.t >= v.len) voices.splice(k, 1);
+}
+out[i] = s * 0.5;
+outIdx++;
+}
+};
 }
 function tiltChain(tilt, sr) {
 if (!tilt || Math.abs(tilt) < 0.02) return null;
@@ -335,7 +442,8 @@ win[i] = w; ws2 += w * w;
 }
 const spectra = new Float32Array(cols * half);
 const ring = new Float32Array(N);
-let rp = 0, col = 0, nextAt = Math.min(hop, Math.max(0, total - 1));
+let rp = 0, col = 0;
+let nextAt = total >= N ? Math.min(N - 1, total - 1) : Math.min(hop, Math.max(0, total - 1));
 function frame() {
 for (let i = 0; i < N; i++) { re[i] = ring[(rp + i) % N] * win[i]; im[i] = 0; }
 fft(re, im, false);
@@ -361,6 +469,17 @@ return { spectra: spectra, avg: avg, cols: cols, half: half, hop: hop, fftSize: 
 }
 };
 }
+function measureSpectrum(arr, sr, N, windowName) {
+const sp = spectralCore(sr, arr.length, N, windowName, 256);
+const CH = 32768;
+let pos = 0;
+while (pos < arr.length) {
+const n = Math.min(CH, arr.length - pos);
+sp.feed(arr.subarray(pos, pos + n), n, pos);
+pos += n;
+}
+return sp.finish().avg;
+}
 const HB = 256;
 function makeAnalyzer(sr, ch, total, opts) {
 const sp = spectralCore(sr, total, opts.fftSize, opts.window, opts.cols);
@@ -372,7 +491,8 @@ let subIdx = 0;
 const tpRing = []; for (let c = 0; c < ch; c++) tpRing.push(new Float32Array(24));
 let tpPos = 0, tpFill = 0;
 const hist = new Float64Array(HB);
-const peaksMin = new Float32Array(opts.buckets), peaksMax = new Float32Array(opts.buckets);
+const peaksMin = new Float32Array(opts.buckets).fill(Infinity);
+const peaksMax = new Float32Array(opts.buckets).fill(-Infinity);
 const bStep = opts.buckets / total;
 const tpBlocks = [];
 let tpBlockMax = 0, tpBlockIdx = 0;
@@ -439,6 +559,10 @@ finish: function () {
 const s = sp.finish();
 if (subIdx > 0) for (let c = 0; c < ch; c++) energies[c].push(acc[c] * sub / subIdx);
 if (tpBlockIdx > 0) tpBlocks.push(tpBlockMax);
+for (let i = 0; i < peaksMin.length; i++) {
+if (!isFinite(peaksMin[i])) peaksMin[i] = 0;
+if (!isFinite(peaksMax[i])) peaksMax[i] = 0;
+}
 const nSub = energies[0].length;
 const loud = function (p) { return -0.691 + 10 * Math.log10(Math.max(p, 1e-14)); };
 function blockLoud(i, len) {
@@ -494,24 +618,36 @@ activeFrames: nAct / ch, sr: sr, ch: ch
 }
 function wavHeader(sr, ch, bits, dataSize) {
 const bps = bits === 16 ? 2 : (bits === 24 ? 3 : 4);
-const ab = new ArrayBuffer(44);
+const ext = ch > 2;
+const extra = ext ? 24 : 0;
+const ab = new ArrayBuffer(44 + extra);
 const dv = new DataView(ab);
 let p = 0;
 const ws = function (t) { for (let i = 0; i < t.length; i++) dv.setUint8(p++, t.charCodeAt(i)); };
-ws('RIFF'); dv.setUint32(p, 36 + dataSize, true); p += 4;
-ws('WAVE'); ws('fmt '); dv.setUint32(p, 16, true); p += 4;
-dv.setUint16(p, bits === 32 ? 3 : 1, true); p += 2;
+ws('RIFF'); dv.setUint32(p, 36 + extra + dataSize, true); p += 4;
+ws('WAVE'); ws('fmt '); dv.setUint32(p, ext ? 40 : 16, true); p += 4;
+dv.setUint16(p, ext ? 0xFFFE : (bits === 32 ? 3 : 1), true); p += 2;
 dv.setUint16(p, ch, true); p += 2;
 dv.setUint32(p, sr, true); p += 4;
 dv.setUint32(p, sr * ch * bps, true); p += 4;
 dv.setUint16(p, ch * bps, true); p += 2;
+dv.setUint16(p, bps * 8, true); p += 2;
+if (ext) {
+dv.setUint16(p, 22, true); p += 2;
 dv.setUint16(p, bits, true); p += 2;
+dv.setUint32(p, ch === 6 ? 0x3F : (ch === 8 ? 0x63F : 0), true); p += 4;
+dv.setUint16(p, bits === 32 ? 3 : 1, true); p += 2;
+dv.setUint16(p, 0, true); p += 2;
+dv.setUint32(p, 0x00100000, true); p += 4;
+dv.setUint32(p, 0x0000AA00, true); p += 4;
+dv.setUint32(p, 0x719B3800, true); p += 4;
+}
 ws('data'); dv.setUint32(p, dataSize, true);
 return new Uint8Array(ab);
 }
 function readSlice(blob, a, b) {
 const s = blob.slice(a, b);
-if (s.arrayBuffer) return s.arrayBuffer();
+if (typeof s.arrayBuffer === 'function') return s.arrayBuffer();
 if (typeof FileReaderSync === 'function') { try { return Promise.resolve(new FileReaderSync().readAsArrayBuffer(s)); } catch (e) {} }
 return new Promise(function (res, rej) { const fr = new FileReader(); fr.onload = function () { res(fr.result); }; fr.onerror = function () { rej(new Error('slice')); }; fr.readAsArrayBuffer(s); });
 }
@@ -609,9 +745,50 @@ const dec = 42 + r() * 16;
 for (let i = 0; i < n; i++) { const t = i / n; out[i] = bqRun(bp, bqRun(hp, r() * 2 - 1)) * Math.exp(-t * dec) * (1 - Math.exp(-t * 900)); }
 return out;
 }
+async function surroundArrays(spec, hooks) {
+const sr = spec.sr, n = Math.max(1, Math.round(sr * spec.dur));
+const ch = spec.kind === 'sur51' ? 6 : 8;
+const lvl = Math.pow(10, spec.level / 20);
+const out = [];
+for (let c = 0; c < ch; c++) out.push(new Float32Array(n));
+if (spec.kind === 'surid') {
+const freqs = [440, 550, 660, 90, 880, 990, 1100, 1320];
+const seg = Math.max(1, Math.floor(n / ch));
+const fade = Math.max(1, Math.min(Math.round(sr * 0.02), seg >> 3));
+let t0 = Date.now();
+for (let c = 0; c < ch; c++) {
+const d = out[c], f = freqs[c];
+for (let j = 0; j < seg; j++) {
+const i = c * seg + j;
+if (i >= n) break;
+let g = 1;
+if (j < fade) g = j / fade;
+if (j >= seg - fade) g = (seg - 1 - j) / fade;
+d[i] = Math.sin(2 * Math.PI * f * j / sr) * lvl * g;
+}
+if (Date.now() - t0 > 30) { hooks.progress(0.02 + 0.06 * c / ch, 'Генерация обхода каналов'); await hooks.tick(); if (hooks.cancelled()) throw new Error('cancelled'); t0 = Date.now(); }
+}
+return out;
+}
+for (let c = 0; c < ch; c++) {
+await fillChunked(noiseGen('pink', sr, (spec.seed + c * 7919) >>> 0, {}), out[c], hooks, 0.02 + 0.06 * c / ch, 0.02 + 0.06 * (c + 1) / ch, 'Генерация каналов');
+if (c === 3) {
+const lp1 = bqNew('lp', 120, 0.7, 0, sr), lp2 = bqNew('lp', 120, 0.7, 0, sr);
+const d = out[c];
+for (let i = 0; i < n; i++) d[i] = bqRun(lp2, bqRun(lp1, d[i]));
+}
+const d = out[c];
+let s = 0; for (let i = 0; i < n; i++) s += d[i] * d[i];
+const rms = Math.sqrt(s / n);
+const g = rms > 1e-9 ? lvl / Math.SQRT2 / rms : 1;
+for (let i = 0; i < n; i++) d[i] *= g;
+}
+return out;
+}
 async function signalArrays(spec, hooks) {
 const sr = spec.sr, dur = spec.dur, n = Math.max(1, Math.round(sr * dur));
 const kind = spec.kind, lvl = Math.pow(10, spec.level / 20);
+if (kind === 'sur51' || kind === 'sur71' || kind === 'surid') return await surroundArrays(spec, hooks);
 const L = new Float32Array(n), R = new Float32Array(n);
 const useL = spec.chan !== 'r', useR = spec.chan !== 'l';
 const fade = Math.max(1, Math.min(Math.round(sr * 0.02), n >> 2));
@@ -647,15 +824,15 @@ if (Date.now() - t0 > 30) { hooks.progress(0.02 + 0.06 * b / bands.length, 'Ге
 }
 } else if (kind === 'tone') {
 await loop(function (a, b) {
-for (let i = a; i < b; i++) { const v = Math.sin(2 * Math.PI * 1000 * i / sr) * lvl * Math.SQRT2 * env(i); if (useL) L[i] = v; if (useR) R[i] = v; }
+for (let i = a; i < b; i++) { const v = Math.sin(2 * Math.PI * 1000 * i / sr) * lvl * env(i); if (useL) L[i] = v; if (useR) R[i] = v; }
 }, 'Генерация тона');
 } else if (kind === 'pinkband') {
 const h = firDesign(2048, sr, magFor('pinkband', 0, sr, null));
 await fillChunked(firGen(h, rng(spec.seed), false), L, hooks, 0.02, 0.05, 'Генерация полосового шума');
 await fillChunked(firGen(h, rng((spec.seed + 7717) >>> 0), false), R, hooks, 0.05, 0.08, 'Генерация полосового шума');
-let s = 0; for (let i = 0; i < n; i++) s += L[i] * L[i];
-const rms = Math.sqrt(s / n);
-const k = rms > 1e-9 ? lvl / rms : 1;
+let pk = 0;
+for (let i = 0; i < n; i++) { const a = L[i] < 0 ? -L[i] : L[i]; if (a > pk) pk = a; }
+const k = pk > 1e-9 ? lvl / pk : 1;
 for (let i = 0; i < n; i++) { L[i] = useL ? L[i] * k * env(i) : 0; R[i] = useR ? R[i] * k * env(i) : 0; }
 } else if (kind === 'polarity') {
 const period = Math.max(1, Math.round(sr * 0.35));
@@ -775,11 +952,13 @@ throw new Error('Неизвестный источник');
 }
 async function render(spec, hooks) {
 const sr = spec.sr;
-let arrays = null, gens = null;
+let arrays = null, gens = null, srcArrays = null;
 if (spec.source !== 'gen') arrays = await buildArrays(spec, hooks);
+if (spec.kind === 'match' || spec.kind === 'granular') { srcArrays = arrays; arrays = null; }
 const ch = spec.channels;
 const body = arrays ? arrays[0].length : spec.bodyFrames;
-const loop = !!spec.loop && spec.source === 'gen';
+const canLoop = spec.source === 'gen' || spec.kind === 'match' || spec.kind === 'granular';
+const loop = !!spec.loop && canLoop;
 const padA = loop ? 0 : (spec.padA || 0), padB = loop ? 0 : (spec.padB || 0);
 const total = padA + body + padB;
 const fi = loop ? 0 : Math.min(body, spec.fadeIn || 0), fo = loop ? 0 : Math.min(body, spec.fadeOut || 0);
@@ -788,21 +967,31 @@ const CH = 16384;
 const bufs = []; for (let c = 0; c < ch; c++) bufs.push(new Float32Array(CH));
 if (!arrays) {
 gens = [];
+let matchAvg = null;
+if (spec.kind === 'match' && srcArrays && srcArrays.length) {
+hooks.progress(0.09, 'Замер спектра записи');
+await hooks.tick();
+if (hooks.cancelled()) throw new Error('cancelled');
+matchAvg = measureSpectrum(srcArrays[0], sr, 8192, 'hann');
+}
 for (let c = 0; c < ch; c++) {
 const sd = (spec.seed + c * 1013904223) >>> 0;
 if (spec.kind === 'synth') gens.push(synthGen(spec.synthType, sr, sd, spec.drift, spec.alpha));
+else if (spec.kind === 'granular' && srcArrays && srcArrays.length) gens.push(granularGen(srcArrays[Math.min(c, srcArrays.length - 1)], sr, sd, spec.grain || 90));
+else if (spec.kind === 'match' && matchAvg) gens.push(firGen(firDesign(spec.taps || 4096, sr, magFor('match', spec.tilt, sr, matchAvg)), rng(sd), spec.dist === 'gauss'));
 else if (spec.exact || spec.kind === 'curve') {
 const mag = magFor(spec.kind === 'curve' ? 'curve' : spec.type, spec.tilt, sr, spec.curve);
 gens.push(firGen(firDesign(spec.taps || 4096, sr, mag), rng(sd), spec.dist === 'gauss'));
 } else gens.push(noiseGen(spec.type, sr, sd, { tilt: spec.tilt, dist: spec.dist }));
 }
 }
+const rev = spec.reverb ? reverbNew(sr, ch, spec.reverbPreset, (spec.reverbWet === undefined ? 30 : spec.reverbWet) / 100) : null;
 const an = makeAnalyzer(sr, ch, total, { fftSize: spec.fftSize, window: spec.window, cols: 480, buckets: 1600, activeStart: padA, activeEnd: padA + body });
 const parts = [];
 const head = [], tail = [];
 if (loop) for (let c = 0; c < ch; c++) { head.push(new Float32Array(loopFade)); tail.push(new Float32Array(loopFade)); }
 let pos = 0, t0 = Date.now();
-hooks.progress(0.09, 'Генерация и измерения');
+hooks.progress(0.11, 'Генерация и измерения');
 while (pos < total) {
 let limit = total;
 if (pos < padA) limit = padA; else if (pos < padA + body) limit = padA + body;
@@ -812,6 +1001,7 @@ if (inBody) {
 const bi = pos - padA;
 if (arrays) { for (let c = 0; c < ch; c++) { const a = arrays[c]; for (let i = 0; i < n; i++) bufs[c][i] = a[bi + i] || 0; } }
 else { for (let c = 0; c < ch; c++) gens[c](bufs[c], n); }
+if (rev) rev.process(bufs, n);
 for (let i = 0; i < n; i++) {
 const idx = bi + i;
 let g = 1;
@@ -832,7 +1022,7 @@ for (let i = 0; i < n; i++) for (let c = 0; c < ch; c++) f[k++] = bufs[c][i];
 parts.push(new Uint8Array(ab));
 pos += n;
 if (Date.now() - t0 > 40) {
-hooks.progress(0.09 + 0.51 * pos / total, 'Генерация и измерения');
+hooks.progress(0.11 + 0.49 * pos / total, 'Генерация и измерения');
 await hooks.tick();
 if (hooks.cancelled()) throw new Error('cancelled');
 t0 = Date.now();
@@ -846,6 +1036,7 @@ for (let c = 0; c < ch; c++) {
 gens[c](bufs[c], n);
 for (let i = 0; i < n; i++) tail[c][done + i] = bufs[c][i];
 }
+if (rev) rev.process(bufs, n);
 done += n;
 }
 }
@@ -884,9 +1075,11 @@ res.master = master;
 res.gain = gain; res.limited = limited;
 res.duration = total / sr; res.sr = sr; res.ch = ch;
 res.boostDb = spec.boostDb || 0;
+const forceBits = spec.source === 'dither' ? 16 : spec.bits;
+const forceDither = spec.source === 'dither' ? false : spec.dither;
 hooks.progress(0.64, 'Квантование');
-res.wav = await quantize(master, sr, ch, spec.bits, spec.dither, gain, hooks, 0.64, 1);
-res.bits = spec.bits;
+res.wav = await quantize(master, sr, ch, forceBits, forceDither, gain, hooks, 0.64, 1);
+res.bits = forceBits;
 return res;
 }
 async function requantize(spec, hooks) {
@@ -917,7 +1110,7 @@ t0 = Date.now();
 }
 return sp.finish();
 }
-return { render: render, requantize: requantize, respectrum: respectrum, noiseGen: noiseGen, rng: rng, gauss: gauss, clamp: clamp, bqSet: bqSet, bqNew: bqNew, bqRun: bqRun, firDesign: firDesign, firGen: firGen, magFor: magFor };
+return { render: render, requantize: requantize, respectrum: respectrum, noiseGen: noiseGen, rng: rng, gauss: gauss, clamp: clamp, bqSet: bqSet, bqNew: bqNew, bqRun: bqRun, firDesign: firDesign, firGen: firGen, magFor: magFor, reverbNew: reverbNew };
 }
 
 const $ = function (id) { return document.getElementById(id); };
@@ -940,14 +1133,22 @@ lufs: 'Интегральная громкость: взвешивание по 
 none: 'Уровень не меняется. Клиппинг, если он появится, будет показан в отчёте'
 };
 const SIG_NOTE = {
-sweep: 'Логарифмический свип с фейдами по 20 мс. Уровень задаёт амплитуду, RMS на 3 дБ ниже',
+sweep: 'Логарифмический свип с фейдами по 20 мс',
 steps: 'Третьоктавные ступени от 25 Гц до 20 кГц, каждая со своими микрофейдами',
-tone: 'Опорный тон 1 кГц. Уровень считается как RMS, амплитуда на 3 дБ выше',
-pinkband: 'Розовый шум в полосе 500 Гц – 2 кГц, нормирован по RMS. Пригоден для настройки речевого тракта',
+tone: 'Опорный тон 1 кГц',
+pinkband: 'Розовый шум в полосе 500 Гц – 2 кГц, нормирован по пиковому уровню. Пригоден для настройки речевого тракта',
 polarity: 'Пачки только положительных полуволн 200 Гц. На волне видно, что сигнал несимметричен: переворот полярности меняет форму вверх ногами',
 channels: 'Шесть сегментов: L 440 Гц, R 880 Гц, оба, и повтор. Проверка распайки и баланса',
-phase: 'Чередование синфазы и противофазы каждые 0,9 с. В противофазе звук растекается по сторонам и почти исчезает при сведении в моно — на колонках ноутбука разница слышна сразу',
-isp: 'Синус на четверти частоты дискретизации со сдвигом 45°: отсчёты −0,1 dBFS, истинный пик около +2,9 dBTP'
+phase: 'Чередование синфазы и противофазы каждые 0,9 с. В противофазе звук растекается по сторонам и почти исчезает при сведении в моно',
+isp: 'Синус на четверти частоты дискретизации со сдвигом 45°: отсчёты −0,1 dBFS, истинный пик около +2,9 dBTP. Уровень здесь не используется',
+sur51: 'Шесть независимых каналов: FL, FR, FC, LFE, BL, BR. LFE ограничен 120 Гц. Порядок и маска каналов прописаны в WAV, MP3 для такого файла недоступен',
+sur71: 'Восемь независимых каналов: FL, FR, FC, LFE, BL, BR, SL, SR. Каждый со своим seed, поэтому каналы полностью декоррелированы',
+surid: 'Поочерёдный обход восьми каналов 7.1: FL 440, FR 550, FC 660, LFE 90, BL 880, BR 990, SL 1100, SR 1320 Гц. Проверка распайки surround-системы'
+};
+const OWN_NOTE = {
+asis: 'Исходная запись без изменений, доступны только огибающая, уровень и пространство',
+match: 'Замеряется усреднённый спектр записи и синтезируется стационарный шум с той же АЧХ. Тембр помещения остаётся, события исчезают',
+granular: 'Запись режется на зёрна и собирается заново со случайными сдвигами и скоростью. Фактура остаётся живой, но перестаёт повторяться'
 };
 
 const state = {
@@ -955,6 +1156,8 @@ mode: 'generate', type: 'pink', mixType: 'pink', testType: 'pink', liveType: 'pi
 tilt: 0, duration: 60, sampleRate: 44100, bitDepth: 24, dither: true, channels: 2, dist: 'uniform',
 norm: 'truepeak', target: -1, exact: false,
 fadeIn: 0, fadeOut: 0, padStart: 0, padEnd: 0, loop: false,
+reverb: false, reverbPreset: 'hall', reverbWet: 30,
+liveReverb: false, liveReverbPreset: 'hall', liveReverbWet: 30,
 seed: 12345, seedAuto: true, snr: -20, keepLevel: true, mixFile: null,
 labTool: 'notch', notchFreq: 1000, notchQ: 8, binBase: 200, binBeat: 6, rot8dSpeed: 4,
 notchTimer: 0, binTimer: 0,
@@ -963,6 +1166,9 @@ curveDur: 20, curveTaps: 4096,
 signalKind: 'sweep', signalDur: 20, signalLevel: -12, signalChan: 'both',
 calibDur: 30, calibBand: 'full', calibChan: 'both',
 synthType: 'wind', synthDur: 30, synthAlpha: 0.6, synthDrift: 35, percType: 'snare',
+ownMode: 'asis', ownDur: 60, ownGrain: 90, ownTaps: 4096,
+ownFadeIn: 0, ownFadeOut: 0, ownPadA: 0, ownPadB: 0, ownTilt: 0,
+ownNorm: 'truepeak', ownTarget: -1, ownReverb: false, ownPreset: 'hall', ownWet: 30, ownLoop: false,
 fftSize: 8192, window: 'hann', freqScale: 'log', specTop: -20, specRange: 80,
 volume: 80, view: 'wave', dlBits: 24, mp3Rate: 192,
 busy: false, cancelled: false, analysis: null, master: null, gain: 1, meta: null,
@@ -971,6 +1177,7 @@ seeking: false, tooBig: false, fftPending: false
 };
 const curveData = new Float32Array(400);
 curveData.fill(0.5);
+const SAVE_KEYS = ['mode','type','mixType','testType','liveType','tilt','duration','sampleRate','bitDepth','dither','channels','dist','norm','target','exact','fadeIn','fadeOut','padStart','padEnd','loop','reverb','reverbPreset','reverbWet','liveReverb','liveReverbPreset','liveReverbWet','seed','seedAuto','snr','keepLevel','labTool','notchFreq','notchQ','binBase','binBeat','rot8dSpeed','notchTimer','binTimer','liveTilt','liveDrift','liveLevel','curveDur','curveTaps','signalKind','signalDur','signalLevel','signalChan','calibDur','calibBand','calibChan','synthType','synthDur','synthAlpha','synthDrift','percType','ownMode','ownDur','ownGrain','ownTaps','ownFadeIn','ownFadeOut','ownPadA','ownPadB','ownTilt','ownNorm','ownTarget','ownReverb','ownPreset','ownWet','ownLoop','fftSize','window','freqScale','specTop','specRange','volume','view','dlBits','mp3Rate'];
 
 function load() {
 try {
@@ -997,6 +1204,8 @@ let mp3Lib = null, mp3Promise = null;
 const loopCache = new Map();
 const live = { on: false, node: null, src: null, lfo: null, lfoGain: null, gain: null, an: null, data: null, raf: 0, watch: 0, kind: 'none' };
 const knobs = {};
+const waveView = { a: 0, b: 1, sa: -1, sb: -1 };
+const own = { arrays: null, sr: 44100, ch: 1, name: '', rec: false, stream: null, node: null, sp: null, sink: null, chunks: null, frames: 0, timer: 0, t0: 0, meterT: 0, workletTried: false, workletOk: false };
 
 const tick = (function () {
 if (typeof MessageChannel === 'function') {
@@ -1010,12 +1219,13 @@ return function () { return new Promise(function (r) { setTimeout(r, 0); }); };
 function save() {
 try {
 const o = {};
-['mode','type','mixType','testType','liveType','tilt','duration','sampleRate','bitDepth','dither','channels','dist','norm','target','exact','fadeIn','fadeOut','padStart','padEnd','loop','seed','seedAuto','snr','keepLevel','labTool','notchFreq','notchQ','binBase','binBeat','rot8dSpeed','notchTimer','binTimer','liveTilt','liveDrift','liveLevel','curveDur','curveTaps','signalKind','signalDur','signalLevel','signalChan','calibDur','calibBand','calibChan','synthType','synthDur','synthAlpha','synthDrift','percType','fftSize','window','freqScale','specTop','specRange','volume','view','dlBits','mp3Rate'].forEach(function (k) { o[k] = state[k]; });
+SAVE_KEYS.forEach(function (k) { o[k] = state[k]; });
 o.curve = Array.from(curveData);
 localStorage.setItem(STORE, JSON.stringify(o));
 } catch (e) {}
 }
 function fmtTime(s) { s = Math.max(0, Math.floor(s || 0)); const m = Math.floor(s / 60); return m + ':' + (s % 60 < 10 ? '0' : '') + (s % 60); }
+function fmtTimeMs(s) { if (!isFinite(s)) return '—'; const t = Math.max(0, s); const m = Math.floor(t / 60); const sec = t - m * 60; return m + ':' + (sec < 10 ? '0' : '') + sec.toFixed(2).replace('.', ','); }
 function fmtSize(b) { if (b < 1024) return b + ' Б'; if (b < 1048576) return (b / 1024).toFixed(1).replace('.', ',') + ' КБ'; return (b / 1048576).toFixed(1).replace('.', ',') + ' МБ'; }
 function db(v, d) { if (!isFinite(v)) return '—'; return (v >= 0 ? '+' : '−') + Math.abs(v).toFixed(d === undefined ? 1 : d).replace('.', ','); }
 function num(v, d) { if (!isFinite(v)) return '—'; return v.toFixed(d).replace('.', ','); }
@@ -1107,10 +1317,11 @@ return mp3Promise;
 function toInt16(v) { const s = v > 1 ? 1 : (v < -1 ? -1 : v); return Math.round(s * 32767); }
 async function readSliceMain(blob, a, b) {
 const s = blob.slice(a, b);
-if (s.arrayBuffer) return s.arrayBuffer();
+if (typeof s.arrayBuffer === 'function') return s.arrayBuffer();
 return new Promise(function (res, rej) { const fr = new FileReader(); fr.onload = function () { res(fr.result); }; fr.onerror = function () { rej(new Error('read')); }; fr.readAsArrayBuffer(s); });
 }
 async function encodeMp3(master, sr, ch, kbps, gain, hooks) {
+if (ch > 2) throw new Error('MP3 поддерживает только моно и стерео. Сохраните такой результат в WAV');
 const lib = await ensureMp3();
 const outSr = MP3_RATES.indexOf(sr) >= 0 ? sr : 48000;
 const ratio = outSr / sr;
@@ -1166,6 +1377,7 @@ $('ltasWrap').classList.toggle('hidden', kind !== 'ltas');
 $('curveCanvas').classList.toggle('hidden', kind !== 'curve');
 $('emptyState').classList.toggle('hidden', kind !== 'empty');
 $('cursorRead').classList.toggle('hidden', kind !== 'spectro' && kind !== 'welch');
+$('waveControls').classList.toggle('hidden', kind !== 'wave');
 $('plotControls').classList.toggle('hidden', kind !== 'spectro' && kind !== 'welch');
 $('specLegend').classList.toggle('hidden', kind !== 'spectro');
 $('welchControls').classList.toggle('hidden', kind !== 'welch');
@@ -1192,6 +1404,25 @@ function fMin() { return 20; }
 function fMax() { return Math.min(20000, state.sr * 0.5); }
 function freqNorm(f) { return state.freqScale === 'lin' ? clamp((f - fMin()) / (fMax() - fMin()), 0, 1) : clamp(Math.log(f / fMin()) / Math.log(fMax() / fMin()), 0, 1); }
 function normFreq(t) { return state.freqScale === 'lin' ? fMin() + (fMax() - fMin()) * t : fMin() * Math.pow(fMax() / fMin(), t); }
+function waveInfoUpdate() {
+const el = $('waveInfo');
+if (!state.analysis) { el.textContent = 'Нет результата'; return; }
+const d = state.duration_s;
+const span = (waveView.b - waveView.a) * d;
+let t = 'Окно ' + fmtTimeMs(waveView.a * d) + ' – ' + fmtTimeMs(waveView.b * d) + ' · ' + num(span, 2) + ' с';
+if (waveView.sa >= 0 && waveView.sb > waveView.sa) {
+const a = state.analysis, B = a.peaks.min.length;
+let pk = 0;
+const i0 = clamp(Math.floor(waveView.sa * B), 0, B - 1), i1 = clamp(Math.ceil(waveView.sb * B), i0 + 1, B);
+for (let i = i0; i < i1; i++) {
+const lo = Math.abs(a.peaks.min[i]), hi = Math.abs(a.peaks.max[i]);
+if (lo > pk) pk = lo;
+if (hi > pk) pk = hi;
+}
+t += ' · выделение ' + num((waveView.sb - waveView.sa) * d, 2) + ' с · пик ' + db(20 * Math.log10(Math.max(pk * state.gain, 1e-12)), 1) + ' dBFS';
+}
+el.textContent = t;
+}
 function drawWave() {
 const a = state.analysis;
 if (!a) { showVisual('empty'); return; }
@@ -1199,24 +1430,48 @@ showVisual('wave');
 const f = fit($('waveform')), c = f.c, w = f.w, h = f.h;
 c.clearRect(0, 0, w, h);
 const mn = a.peaks.min, mx = a.peaks.max, B = mn.length, g = state.gain;
+const va = waveView.a, vb = waveView.b, span = Math.max(1e-6, vb - va);
+if (waveView.sa >= 0 && waveView.sb > waveView.sa) {
+const x0 = (waveView.sa - va) / span * w, x1 = (waveView.sb - va) / span * w;
+const l = Math.max(0, Math.min(x0, x1)), r = Math.min(w, Math.max(x0, x1));
+if (r > l) {
+c.fillStyle = 'rgba(193,154,107,0.10)';
+c.fillRect(l, 0, r - l, h);
+c.strokeStyle = 'rgba(212,173,125,0.55)'; c.lineWidth = 1;
+c.beginPath(); c.moveTo(l + .5, 0); c.lineTo(l + .5, h); c.moveTo(r - .5, 0); c.lineTo(r - .5, h); c.stroke();
+}
+}
 c.strokeStyle = 'rgba(193,154,107,.85)'; c.lineWidth = 1; c.beginPath();
 for (let x = 0; x < w; x++) {
-const s = Math.floor(x * B / w), e = Math.max(s + 1, Math.floor((x + 1) * B / w));
+const t0 = va + span * x / w, t1 = va + span * (x + 1) / w;
+const s = clamp(Math.floor(t0 * B), 0, B - 1);
+const e = clamp(Math.max(s + 1, Math.floor(t1 * B)), s + 1, B);
 let lo = 0, hi = 0;
-for (let i = s; i < e && i < B; i++) { if (mn[i] < lo) lo = mn[i]; if (mx[i] > hi) hi = mx[i]; }
+for (let i = s; i < e; i++) {
+const l = mn[i], m = mx[i];
+if (isFinite(l) && l < lo) lo = l;
+if (isFinite(m) && m > hi) hi = m;
+}
 const y1 = h / 2 - hi * g * h / 2 * 0.92, y2 = h / 2 - lo * g * h / 2 * 0.92;
 c.moveTo(x + .5, y1); c.lineTo(x + .5, Math.max(y2, y1 + .6));
 }
 c.stroke();
-c.strokeStyle = 'rgba(192,112,95,.45)'; c.setLineDash([4, 4]); c.beginPath();
+c.strokeStyle = 'rgba(192,112,95,.4)'; c.setLineDash([4, 4]); c.beginPath();
 c.moveTo(0, h * 0.04); c.lineTo(w, h * 0.04); c.moveTo(0, h * 0.96); c.lineTo(w, h * 0.96); c.stroke(); c.setLineDash([]);
 if (audioEl.duration > 0) {
-const x = clamp(audioEl.currentTime / audioEl.duration, 0, 1) * w;
+const t = clamp(audioEl.currentTime / audioEl.duration, 0, 1);
+if (t >= va && t <= vb) {
+const x = (t - va) / span * w;
 c.strokeStyle = '#e8c88c'; c.lineWidth = 1.5; c.beginPath(); c.moveTo(x, 0); c.lineTo(x, h); c.stroke();
 c.fillStyle = '#e8c88c'; c.beginPath(); c.moveTo(x - 4, 0); c.lineTo(x + 4, 0); c.lineTo(x, 6); c.fill();
 }
+}
 c.fillStyle = 'rgba(107,97,86,.9)'; c.font = '10px system-ui,sans-serif';
-c.fillText('клик по волне — перемотка', 8, h - 8);
+c.fillText(fmtTimeMs(va * state.duration_s), 6, h - 8);
+c.textAlign = 'right';
+c.fillText(fmtTimeMs(vb * state.duration_s), w - 6, h - 8);
+c.textAlign = 'left';
+waveInfoUpdate();
 }
 function buildSpectro() {
 const a = state.analysis;
@@ -1412,6 +1667,7 @@ for (let i = 0; i <= 4; i++) c.fillText(fmtTime(state.duration_s * i / 4), clamp
 c.textAlign = 'left';
 let ly = pt + 3;
 [['M 400 мс', '#c19a6b'], ['S 3 с', '#7d8fa8'], ['Истинный пик', '#b4622a'], ['I интегральная', '#86a06d']].forEach(function (s) { c.fillStyle = s[1]; c.fillRect(pl + 8, ly + 4, 12, 2); c.fillStyle = 'rgba(168,155,140,.9)'; c.fillText(s[0], pl + 25, ly); ly += 13; });
+if (state.ch > 2) { c.fillStyle = 'rgba(201,162,39,.9)'; c.textAlign = 'right'; c.fillText('многоканальная сумма без взвешивания', w - 14, pt + 3); c.textAlign = 'left'; }
 }
 function buildLtas() {
 const a = state.analysis;
@@ -1449,6 +1705,7 @@ function drawCurve() {
 const f = fit($('curveCanvas')), c = f.c, w = f.w, h = f.h;
 c.clearRect(0, 0, w, h);
 const pl = 44, pr = 12, pt = 12, pb = 22, pw = w - pl - pr, ph = h - pt - pb;
+const fm = Math.min(20000, state.sampleRate * 0.47);
 c.font = '10px system-ui,sans-serif'; c.textAlign = 'right'; c.textBaseline = 'middle';
 [24, 12, 0, -12, -24].forEach(function (d) {
 const y = pt + ph * (0.5 - d / 48);
@@ -1458,8 +1715,8 @@ c.fillStyle = 'rgba(168,155,140,.85)'; c.fillText((d > 0 ? '+' : '') + d, pl - 6
 });
 c.textAlign = 'center'; c.textBaseline = 'top';
 [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000].forEach(function (fq) {
-if (fq > fMax()) return;
-const x = pl + pw * Math.log(fq / 20) / Math.log(fMax() / 20);
+if (fq > fm) return;
+const x = pl + pw * Math.log(fq / 20) / Math.log(fm / 20);
 c.strokeStyle = 'rgba(193,154,107,.1)'; c.beginPath(); c.moveTo(x + .5, pt); c.lineTo(x + .5, pt + ph); c.stroke();
 c.fillStyle = 'rgba(168,155,140,.8)'; c.fillText(fq >= 1000 ? (fq / 1000) + 'к' : String(fq), x, pt + ph + 5);
 });
@@ -1514,6 +1771,7 @@ if (isFinite(a.corr)) ch.push('<span class="chip' + (a.corr > 0.999 ? ' warn' : 
 ch.push('<span class="chip"><span>Эксцесс</span><b>' + num(a.kurt, 2) + '</b></span>');
 const sl = slopeFit();
 if (isFinite(sl)) ch.push('<span class="chip"><span>Наклон</span><b>' + db(sl, 2) + ' дБ/окт</b></span>');
+if (state.ch > 2) ch.push('<span class="chip warn"><span>Каналов</span><b>' + state.ch + '</b></span>');
 if (a.clipped > 0) ch.push('<span class="chip bad"><span>Клиппинг</span><b>' + a.clipped + ' отсч.</b></span>');
 else ch.push('<span class="chip ok"><b>Клиппинга нет</b></span>');
 if (a.limited) ch.push('<span class="chip warn"><b>Огранижено по пику</b></span>');
@@ -1572,13 +1830,6 @@ seekBar.addEventListener('pointerdown', function () { state.seeking = true; });
 seekBar.addEventListener('input', function () { if (audioEl.duration > 0) audioEl.currentTime = seekBar.value / 1000 * audioEl.duration; });
 ['pointerup', 'pointercancel', 'change'].forEach(function (e) { seekBar.addEventListener(e, function () { state.seeking = false; }); });
 window.addEventListener('pointerup', function () { state.seeking = false; });
-$('waveform').addEventListener('pointerdown', function (e) {
-if (!(audioEl.duration > 0)) return;
-const r = $('waveform').getBoundingClientRect();
-audioEl.currentTime = clamp((e.clientX - r.left) / r.width, 0, 0.999) * audioEl.duration;
-seekBar.value = Math.floor(audioEl.currentTime / audioEl.duration * 1000);
-timeText(); updateMeters(); renderView();
-});
 $('volume').addEventListener('input', function () {
 state.volume = parseInt($('volume').value, 10);
 audioEl.volume = state.volume / 100;
@@ -1636,25 +1887,34 @@ state.url = URL.createObjectURL(r.wav);
 audioEl.src = state.url; audioEl.loop = state.loop; audioEl.volume = state.volume / 100;
 if (old) URL.revokeObjectURL(old);
 spectroDirty = true; spectroImg = null;
+waveView.a = 0; waveView.b = 1; waveView.sa = -1; waveView.sb = -1;
 $('dlBitDepth').value = String(r.bits); state.dlBits = r.bits;
 seekBar.disabled = false; seekBar.value = 0;
 let label = meta.label;
 if (r.boostDb) label += ' · +' + num(r.boostDb, 0) + ' дБ';
-$('stageMeta').textContent = label + ' · ' + fmtTime(r.duration) + ' · ' + r.sr + ' Гц · ' + (r.ch === 2 ? 'стерео' : 'моно') + ' · ' + r.bits + ' бит · ' + fmtSize(r.wav.size);
+$('stageMeta').textContent = label + ' · ' + fmtTime(r.duration) + ' · ' + r.sr + ' Гц · ' + (r.ch > 2 ? r.ch + ' кан.' : (r.ch === 2 ? 'стерео' : 'моно')) + ' · ' + r.bits + ' бит · ' + fmtSize(r.wav.size);
 timeText(); renderChips(); buildLtas(); updateMeters(); syncView(); refresh(); mediaMeta();
 }
 function refresh() {
 const b = state.busy;
 $('generateBtn').disabled = b || state.tooBig;
 $('mixBtn').disabled = b || !state.mixFile;
-['curveGen', 'signalGen', 'calibBtn', 'synthBtn', 'percBtn', 'ditherNo', 'ditherYes', 'ltasCsv', 'welchCsv'].forEach(function (id) { const e = $(id); if (e) e.disabled = b; });
+['curveGen', 'signalGen', 'calibBtn', 'synthBtn', 'percBtn', 'ditherNo', 'ditherYes', 'ltasCsv', 'welchCsv', 'ownGen', 'ownRec'].forEach(function (id) { const e = $(id); if (e) e.disabled = b; });
+$('ownGen').disabled = b || !own.arrays;
+$('ownRec').disabled = b;
+$('ownWav').disabled = b || !state.wav;
+$('ownMp3').disabled = b || !state.master || state.ch > 2;
 $('reanalyzeBtn').disabled = b || !state.master;
 $('reanalyzeBtn').classList.toggle('pending', state.fftPending && !b);
 $('dlWavBtn').disabled = b || !state.wav;
-$('dlMp3Btn').disabled = b || !state.master;
+$('dlMp3Btn').disabled = b || !state.master || state.ch > 2;
 $('playBtn').disabled = !state.url;
-['cancelBtn', 'cancelBtnMix', 'cancelBtnCurve', 'cancelBtnSignal', 'cancelBtnCalib', 'cancelBtnSynth'].forEach(function (id) { const e = $(id); if (e) e.classList.toggle('hidden', !b); });
+['cancelBtn', 'cancelBtnMix', 'cancelBtnCurve', 'cancelBtnSignal', 'cancelBtnCalib', 'cancelBtnSynth', 'ownCancel'].forEach(function (id) { const e = $(id); if (e) e.classList.toggle('hidden', !b); });
 $('viewToggle').querySelectorAll('.view-btn').forEach(function (btn) { btn.disabled = btn.dataset.view === 'curve' ? false : !state.analysis; });
+$('waveZoomIn').disabled = !state.analysis;
+$('waveZoomOut').disabled = !state.analysis;
+$('waveFit').disabled = !state.analysis;
+$('waveSelClear').disabled = !state.analysis;
 }
 async function job(btn, label, fn) {
 if (state.busy) return;
@@ -1753,7 +2013,7 @@ render();
 let drag = null;
 host.addEventListener('pointerdown', function (e) {
 e.preventDefault();
-host.setPointerCapture(e.pointerId);
+try { host.setPointerCapture(e.pointerId); } catch (x) {}
 host.classList.add('dragging');
 drag = { x: e.clientX, y: e.clientY, v: value };
 });
@@ -1808,9 +2068,29 @@ const off = state.norm === 'none';
 $('normTargetSlider').disabled = off; $('normTargetNum').disabled = off;
 }
 function setNorm(m) { state.norm = m; state.target = NORM_DEF[m]; syncNormUI(); save(); }
+function syncDitherUI() {
+const on = state.bitDepth === 16;
+$('ditherToggle').disabled = !on;
+$('ditherRow').classList.toggle('dimmed', !on);
+$('ditherSub').textContent = on ? 'Убирает ступеньки квантования на тихих участках и длинных фейдах' : 'Работает только при 16 бит. При 24 и 32 бит квантование настолько мелкое, что дизеринг не нужен';
+}
+function syncReverbUI() {
+$('reverbSection').classList.toggle('dimmed', !state.reverb);
+$('reverbPreset').disabled = !state.reverb;
+$('reverbWet').disabled = !state.reverb;
+$('reverbWetNum').disabled = !state.reverb;
+$('liveReverbSection').classList.toggle('dimmed', !state.liveReverb);
+$('liveReverbPreset').disabled = !state.liveReverb;
+$('liveReverbWet').disabled = !state.liveReverb;
+$('liveReverbWetNum').disabled = !state.liveReverb;
+$('ownReverbSection').classList.toggle('dimmed', !state.ownReverb);
+$('ownReverbPreset').disabled = !state.ownReverb;
+$('ownWet').disabled = !state.ownReverb;
+$('ownWetNum').disabled = !state.ownReverb;
+}
 function nextSeed() { if (state.seedAuto) { state.seed = (Math.random() * 4294967295 >>> 0) || 1; $('seedNum').value = state.seed; } }
 function baseSpec() {
-return { sr: state.sampleRate, channels: state.channels, bits: state.bitDepth, dither: state.dither, norm: state.norm, target: state.target, seed: state.seed, fftSize: state.fftSize, window: state.window, exact: state.exact, dist: state.dist, tilt: state.tilt };
+return { sr: state.sampleRate, channels: state.channels, bits: state.bitDepth, dither: state.dither, norm: state.norm, target: state.target, seed: state.seed, fftSize: state.fftSize, window: state.window, exact: state.exact, dist: state.dist, tilt: state.tilt, reverb: state.reverb, reverbPreset: state.reverbPreset, reverbWet: state.reverbWet };
 }
 
 swatches('swatches', state.type, function (t) { state.type = t; refresh(); });
@@ -1829,6 +2109,8 @@ slider('fadeInSlider', 'fadeInNum', 'fadeIn', 0, 30);
 slider('fadeOutSlider', 'fadeOutNum', 'fadeOut', 0, 30);
 slider('padStartSlider', 'padStartNum', 'padStart', 0, 60, false, estimate);
 slider('padEndSlider', 'padEndNum', 'padEnd', 0, 60, false, estimate);
+slider('reverbWet', 'reverbWetNum', 'reverbWet', 0, 100);
+slider('liveReverbWet', 'liveReverbWetNum', 'liveReverbWet', 0, 100, false, function () { if (live.on) liveRebuild(); });
 slider('snrSlider', 'snrNum', 'snr', -40, 20);
 slider('notchFreq', 'notchFreqNum', 'notchFreq', 100, 12000, false, function (v) { if (labSession && labSession.notch) labSession.notch.frequency.setTargetAtTime(v, audioCtx.currentTime, 0.02); });
 slider('notchQ', 'notchQNum', 'notchQ', 1, 50, true, function (v) { if (labSession && labSession.notch) labSession.notch.Q.setTargetAtTime(v, audioCtx.currentTime, 0.02); });
@@ -1842,18 +2124,31 @@ slider('calibDur', 'calibDurNum', 'calibDur', 10, 120);
 slider('synthDur', 'synthDurNum', 'synthDur', 5, 600);
 slider('synthAlpha', 'synthAlphaNum', 'synthAlpha', -1, 2.5, true);
 slider('synthDrift', 'synthDriftNum', 'synthDrift', 0, 100);
+slider('ownDur', 'ownDurNum', 'ownDur', 5, 600);
+slider('ownGrain', 'ownGrainNum', 'ownGrain', 20, 400);
+slider('ownFadeIn', 'ownFadeInNum', 'ownFadeIn', 0, 30, true);
+slider('ownFadeOut', 'ownFadeOutNum', 'ownFadeOut', 0, 30, true);
+slider('ownPadA', 'ownPadANum', 'ownPadA', 0, 30, true);
+slider('ownPadB', 'ownPadBNum', 'ownPadB', 0, 30, true);
+slider('ownTilt', 'ownTiltNum', 'ownTilt', -2, 2, true);
+slider('ownTarget', 'ownTargetNum', 'ownTarget', -40, 0, true);
+slider('ownWet', 'ownWetNum', 'ownWet', 0, 100);
 
-$('sampleRateSelect').addEventListener('change', function () { state.sampleRate = parseInt($('sampleRateSelect').value, 10); estimate(); save(); });
-$('bitDepthSelect').addEventListener('change', function () { state.bitDepth = parseInt($('bitDepthSelect').value, 10); estimate(); save(); });
+$('sampleRateSelect').addEventListener('change', function () { state.sampleRate = parseInt($('sampleRateSelect').value, 10); estimate(); syncCurveRange(); save(); });
+$('bitDepthSelect').addEventListener('change', function () { state.bitDepth = parseInt($('bitDepthSelect').value, 10); syncDitherUI(); estimate(); save(); });
 $('ditherToggle').addEventListener('change', function () { state.dither = $('ditherToggle').checked; save(); });
 $('keepLevelToggle').addEventListener('change', function () { state.keepLevel = $('keepLevelToggle').checked; save(); });
 $('exactToggle').addEventListener('change', function () { state.exact = $('exactToggle').checked; save(); });
 $('normModeSelect').addEventListener('change', function () { setNorm($('normModeSelect').value); });
 $('loopToggle').addEventListener('change', function () { setLoop($('loopToggle').checked); });
+$('reverbToggle').addEventListener('change', function () { state.reverb = $('reverbToggle').checked; syncReverbUI(); save(); });
+$('reverbPreset').addEventListener('change', function () { state.reverbPreset = $('reverbPreset').value; save(); });
+$('liveReverbToggle').addEventListener('change', function () { state.liveReverb = $('liveReverbToggle').checked; syncReverbUI(); if (live.on) liveRebuild(); save(); });
+$('liveReverbPreset').addEventListener('change', function () { state.liveReverbPreset = $('liveReverbPreset').value; if (live.on) liveRebuild(); save(); });
 $('curveTaps').addEventListener('change', function () { state.curveTaps = parseInt($('curveTaps').value, 10); save(); });
 $('dlBitDepth').addEventListener('change', function () { state.dlBits = parseInt($('dlBitDepth').value, 10); save(); });
 $('mp3Rate').addEventListener('change', function () { state.mp3Rate = parseInt($('mp3Rate').value, 10); save(); });
-$('signalKind').addEventListener('change', function () { state.signalKind = $('signalKind').value; $('signalNote').textContent = SIG_NOTE[state.signalKind]; save(); });
+$('signalKind').addEventListener('change', function () { state.signalKind = $('signalKind').value; syncSignalUI(); save(); });
 $('seedNum').addEventListener('change', function () { state.seed = clamp(parseInt($('seedNum').value, 10) || 1, 1, 4294967295); $('seedNum').value = state.seed; estimate(); save(); });
 $('seedRandom').addEventListener('click', function () { state.seed = (Math.random() * 4294967295 >>> 0) || 1; $('seedNum').value = state.seed; estimate(); save(); });
 $('seedLock').addEventListener('click', function () {
@@ -1872,8 +2167,21 @@ segment('synthType', 'synth', function (v) { state.synthType = v; });
 segment('percType', 'perc', function (v) { state.percType = v; });
 segment('notchTimer', 'min', function (v) { state.notchTimer = parseInt(v, 10); if (labSession && labSession.kind === 'notch') attachTimer(labSession, state.notchTimer, $('notchCountdown')); });
 segment('binTimer', 'min', function (v) { state.binTimer = parseInt(v, 10); if (labSession && labSession.kind === 'bin') attachTimer(labSession, state.binTimer, $('binCountdown')); });
-['cancelBtn', 'cancelBtnMix', 'cancelBtnCurve', 'cancelBtnSignal', 'cancelBtnCalib', 'cancelBtnSynth'].forEach(function (id) { $(id).addEventListener('click', cancelJob); });
+['cancelBtn', 'cancelBtnMix', 'cancelBtnCurve', 'cancelBtnSignal', 'cancelBtnCalib', 'cancelBtnSynth', 'ownCancel'].forEach(function (id) { $(id).addEventListener('click', cancelJob); });
 
+function syncCurveRange() {
+const fm = Math.min(20000, state.sampleRate * 0.47);
+$('curveRange').textContent = 'Диапазон: 20 Гц – ' + (fm >= 1000 ? num(fm / 1000, 2) + ' кГц' : num(fm, 0) + ' Гц') + ' · определяется частотой дискретизации';
+}
+function syncSignalUI() {
+const k = state.signalKind;
+const sur = k === 'sur51' || k === 'sur71' || k === 'surid';
+$('signalNote').textContent = SIG_NOTE[k] || '';
+$('signalChanSection').classList.toggle('dimmed', sur);
+$('signalChannel').querySelectorAll('.seg').forEach(function (b) { b.disabled = sur; });
+$('signalLevel').disabled = k === 'isp';
+$('signalLevelNum').disabled = k === 'isp';
+}
 function markFftPending() { state.fftPending = true; refresh(); pHint('Параметры анализа изменены — нажмите «Пересчитать»'); }
 $('fftSize').addEventListener('change', function () { state.fftSize = parseInt($('fftSize').value, 10); markFftPending(); save(); });
 $('fftWindow').addEventListener('change', function () { state.window = $('fftWindow').value; markFftPending(); save(); });
@@ -1948,7 +2256,7 @@ spec.fadeIn = Math.round(state.fadeIn * spec.sr); spec.fadeOut = Math.round(stat
 spec.loop = state.loop;
 job($('generateBtn'), 'Генерация…', async function (hooks) {
 const r = await runDsp('run', spec, hooks);
-applyResult(r, state.type, { label: LABELS[state.type] + (Math.abs(state.tilt) > 0.02 ? ' · α ' + num(state.tilt, 2) : '') });
+applyResult(r, state.type, { label: LABELS[state.type] + (Math.abs(state.tilt) > 0.02 ? ' · α ' + num(state.tilt, 2) : '') + (state.reverb ? ' · пространство' : '') });
 });
 });
 
@@ -1961,7 +2269,7 @@ i.textContent = f.size > 180 * 1048576 ? ('Файл ' + fmtSize(f.size) + ' — 
 refresh();
 });
 function readBuf(f) {
-if (f.arrayBuffer) return f.arrayBuffer();
+if (typeof f.arrayBuffer === 'function') return f.arrayBuffer();
 return new Promise(function (res, rej) { const fr = new FileReader(); fr.onload = function () { res(fr.result); }; fr.onerror = function () { rej(new Error('read')); }; fr.readAsArrayBuffer(f); });
 }
 function ctx() {
@@ -2081,7 +2389,7 @@ step(); s.timerId = setInterval(step, 500);
 }
 function showStop(id) { $(id + 'Play').classList.add('hidden'); $(id + 'Stop').classList.remove('hidden'); }
 $('notchPlay').addEventListener('click', async function () {
-stopLab(); liveStop(); await ensureCtx();
+stopLab(); liveStop(); ownAbort(); await ensureCtx();
 const s = baseSess('notch');
 const src = audioCtx.createBufferSource(); src.buffer = loopBuf('pink'); src.loop = true;
 const nf = audioCtx.createBiquadFilter(); nf.type = 'notch'; nf.frequency.value = state.notchFreq; nf.Q.value = state.notchQ;
@@ -2094,7 +2402,7 @@ mediaMeta();
 });
 $('notchStop').addEventListener('click', function () { stopLab(); resetLab(); $('stageMeta').textContent = '— · —'; });
 $('binPlay').addEventListener('click', async function () {
-stopLab(); liveStop(); await ensureCtx();
+stopLab(); liveStop(); ownAbort(); await ensureCtx();
 const s = baseSess('bin');
 const bed = audioCtx.createBufferSource(); bed.buffer = loopBuf('pink'); bed.loop = true;
 const bg = audioCtx.createGain(); bg.gain.value = 0.45; bed.connect(bg); bg.connect(s.master);
@@ -2114,7 +2422,7 @@ mediaMeta();
 });
 $('binStop').addEventListener('click', function () { stopLab(); resetLab(); $('stageMeta').textContent = '— · —'; });
 $('rot8dPlay').addEventListener('click', async function () {
-stopLab(); liveStop(); await ensureCtx();
+stopLab(); liveStop(); ownAbort(); await ensureCtx();
 const s = baseSess('rot8d');
 const src = audioCtx.createBufferSource(); src.buffer = loopBuf('pink'); src.loop = true;
 const p = audioCtx.createPanner();
@@ -2145,7 +2453,7 @@ mediaMeta();
 });
 $('rot8dStop').addEventListener('click', function () { stopLab(); resetLab(); $('stageMeta').textContent = '— · —'; });
 $('testPlay').addEventListener('click', async function () {
-stopLab(); liveStop(); await ensureCtx();
+stopLab(); liveStop(); ownAbort(); await ensureCtx();
 const s = baseSess('test');
 let cur = null;
 function play(t) {
@@ -2169,16 +2477,17 @@ mediaMeta();
 $('testStop').addEventListener('click', function () { stopLab(); resetLab(); $('stageMeta').textContent = '— · —'; });
 
 function workletSource() {
-return 'const clamp=' + DSP.clamp.toString() + ';const rng=' + DSP.rng.toString() + ';const gauss=' + DSP.gauss.toString() + ';const bqSet=' + DSP.bqSet.toString() + ';const bqNew=' + DSP.bqNew.toString() + ';const bqRun=' + DSP.bqRun.toString() + ';const noiseGen=' + DSP.noiseGen.toString() + ';' +
+return 'const clamp=' + DSP.clamp.toString() + ';const rng=' + DSP.rng.toString() + ';const gauss=' + DSP.gauss.toString() + ';const bqSet=' + DSP.bqSet.toString() + ';const bqNew=' + DSP.bqNew.toString() + ';const bqRun=' + DSP.bqRun.toString() + ';const noiseGen=' + DSP.noiseGen.toString() + ';const reverbNew=' + DSP.reverbNew.toString() + ';' +
 'class WNLive extends AudioWorkletProcessor{' +
-'constructor(){super();this.type="pink";this.tilt=0;this.drift=25;this.buf=new Float32Array(256);this.w=0;this.tgt=0;this.t=0;this.mk();' +
-'this.port.onmessage=(e)=>{const d=e.data||{};if(d.type!==undefined)this.type=d.type;if(d.tilt!==undefined)this.tilt=d.tilt;if(d.drift!==undefined)this.drift=d.drift;this.mk();};}' +
+'constructor(){super();this.type="pink";this.tilt=0;this.drift=25;this.buf=new Float32Array(256);this.w=0;this.tgt=0;this.t=0;this.rev=null;this.mk();' +
+'this.port.onmessage=(e)=>{const d=e.data||{};if(d.type!==undefined)this.type=d.type;if(d.tilt!==undefined)this.tilt=d.tilt;if(d.drift!==undefined)this.drift=d.drift;if(d.reverb!==undefined){this.rev=d.reverb?reverbNew(sampleRate,2,d.preset,d.wet/100):null;}this.mk();};}' +
 'mk(){try{this.gen=noiseGen(this.type,sampleRate,(Math.random()*4294967295)>>>0,{tilt:this.tilt,dist:"uniform"});this.gen(this.buf,128);}catch(e){this.gen=noiseGen("white",sampleRate,1,{});}}' +
 'process(inputs,outputs){const o=outputs[0];if(!o||!o.length)return true;const n=o[0].length;if(n>this.buf.length)this.buf=new Float32Array(n);' +
 'try{this.gen(this.buf,n);}catch(e){for(let i=0;i<n;i++)this.buf[i]=Math.random()*2-1;}' +
 'this.t+=n;const per=sampleRate*0.7;if(this.t>=per){this.t=0;this.tgt=(Math.random()*2-1)*(this.drift/100);}' +
 'const k=1-Math.exp(-n/(sampleRate*2.2));this.w+=(this.tgt-this.w)*k;const g=1+this.w*0.55;' +
 'for(let c=0;c<o.length;c++){const d=o[c];for(let i=0;i<n;i++)d[i]=this.buf[i]*g;}' +
+'if(this.rev){try{this.rev.process(o,n);}catch(e){this.rev=null;}}' +
 'return true;}}' +
 "registerProcessor('wnl-live',WNLive);";
 }
@@ -2197,13 +2506,14 @@ return true;
 function liveTarget() { return Math.pow(10, state.liveLevel / 20) * (state.volume / 100); }
 function liveApplyLevel() { if (live.gain) { try { live.gain.gain.setTargetAtTime(liveTarget(), audioCtx.currentTime, 0.08); } catch (e) {} } }
 function liveParams() {
-if (live.kind === 'worklet' && live.node) { try { live.node.port.postMessage({ type: state.liveType, tilt: state.liveTilt, drift: state.liveDrift }); } catch (e) {} }
+if (live.kind === 'worklet' && live.node) { try { live.node.port.postMessage({ type: state.liveType, tilt: state.liveTilt, drift: state.liveDrift, reverb: state.liveReverb, preset: state.liveReverbPreset, wet: state.liveReverbWet }); } catch (e) {} }
 else if (live.kind === 'buffer' && live.lfoGain) { try { live.lfoGain.gain.setTargetAtTime(liveTarget() * 0.45 * (state.liveDrift / 100), audioCtx.currentTime, 0.2); } catch (e) {} }
 liveApplyLevel();
 }
 function liveBuildBuffer() {
 const sr = audioCtx.sampleRate, n = Math.floor(sr * 20), fade = Math.floor(sr * 0.3);
 const b = audioCtx.createBuffer(2, n, sr);
+const bufs = [];
 for (let c = 0; c < 2; c++) {
 const tmp = new Float32Array(n + fade);
 DSP.noiseGen(state.liveType, sr, (Math.random() * 4294967295) >>> 0, { tilt: state.liveTilt })(tmp, n + fade);
@@ -2212,6 +2522,14 @@ const rms = Math.sqrt(s / (n + fade)), g = rms > 1e-9 ? 0.2 / rms : 1;
 const d = b.getChannelData(c);
 for (let i = 0; i < n; i++) d[i] = tmp[i] * g;
 for (let i = 0; i < fade; i++) { const t = i / fade; d[i] = tmp[i] * g * Math.sqrt(t) + tmp[n + i] * g * Math.sqrt(1 - t); }
+bufs.push(d);
+}
+if (state.liveReverb) {
+try {
+const rev = DSP.reverbNew(sr, 2, state.liveReverbPreset, state.liveReverbWet / 100);
+const CH = 16384;
+for (let p = 0; p < n; p += CH) rev.process(bufs, Math.min(CH, n - p));
+} catch (e) {}
 }
 return b;
 }
@@ -2230,7 +2548,7 @@ live.src = src; live.lfo = lfo; live.lfoGain = lg; live.kind = 'buffer';
 }
 function liveStartWorklet() {
 const node = new AudioWorkletNode(audioCtx, 'wnl-live', { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2] });
-node.port.postMessage({ type: state.liveType, tilt: state.liveTilt, drift: state.liveDrift });
+node.port.postMessage({ type: state.liveType, tilt: state.liveTilt, drift: state.liveDrift, reverb: state.liveReverb, preset: state.liveReverbPreset, wet: state.liveReverbWet });
 node.onprocessorerror = function () {
 if (!live.on || live.kind !== 'worklet') return;
 liveTeardownSource();
@@ -2326,7 +2644,7 @@ try { if (old.lfo) { old.lfo.stop(); old.lfo.disconnect(); } } catch (e) {}
 try { if (old.lg) old.lg.disconnect(); } catch (e) {}
 }, 250);
 }
-$('livePlay').addEventListener('click', function () { stopLab(); liveStop(); setTimeout(liveStart, 60); });
+$('livePlay').addEventListener('click', function () { stopLab(); liveStop(); ownAbort(); setTimeout(liveStart, 60); });
 $('liveStop').addEventListener('click', function () { liveStop(); $('stageMeta').textContent = '— · —'; });
 
 const cc = $('curveCanvas');
@@ -2363,11 +2681,14 @@ applyResult(r, 'curve', { label: 'Кривая · ' + state.curveTaps + ' отв
 });
 });
 $('signalGen').addEventListener('click', function () {
+nextSeed();
 const kind = state.signalKind;
 const spec = baseSpec();
-spec.source = 'signal'; spec.kind = kind; spec.channels = 2;
+spec.source = 'signal'; spec.kind = kind;
+spec.channels = kind === 'sur51' ? 6 : ((kind === 'sur71' || kind === 'surid') ? 8 : 2);
 spec.dur = state.signalDur; spec.level = state.signalLevel; spec.chan = state.signalChan;
 spec.padA = 0; spec.padB = 0; spec.fadeIn = 0; spec.fadeOut = 0; spec.loop = false; spec.norm = 'none';
+spec.reverb = false;
 job($('signalGen'), 'Генерация…', async function (hooks) {
 const r = await runDsp('run', spec, hooks);
 applyResult(r, 'sig-' + kind, { label: 'Сигнал · ' + $('signalKind').options[$('signalKind').selectedIndex].text });
@@ -2377,6 +2698,7 @@ function ditherRun(on) {
 const spec = baseSpec();
 spec.source = 'dither'; spec.tpdf = on; spec.sr = 44100; spec.channels = 1; spec.bits = 16; spec.dither = false;
 spec.padA = 0; spec.padB = 0; spec.fadeIn = 0; spec.fadeOut = 0; spec.loop = false; spec.norm = 'none';
+spec.reverb = false;
 spec.seed = on ? 424242 : 171717;
 job(on ? $('ditherYes') : $('ditherNo'), 'Генерация…', async function (hooks) {
 const r = await runDsp('run', spec, hooks);
@@ -2391,6 +2713,7 @@ const spec = baseSpec();
 spec.source = 'calib'; spec.channels = 2; spec.bits = 16; spec.dither = true;
 spec.dur = state.calibDur; spec.band = state.calibBand; spec.chan = state.calibChan;
 spec.padA = 0; spec.padB = 0; spec.fadeIn = 0; spec.fadeOut = 0; spec.loop = false; spec.norm = 'none';
+spec.reverb = false;
 job($('calibBtn'), 'Генерация…', async function (hooks) {
 const r = await runDsp('run', spec, hooks);
 applyResult(r, 'calib', { label: 'Калибровка −20 dBFS RMS · ' + (state.calibBand === 'speech' ? '500–2k' : 'полная') + ' · ' + state.calibChan.toUpperCase() });
@@ -2423,6 +2746,288 @@ applyResult(r, 'perc-' + state.percType, { label: names[state.percType] });
 });
 });
 
+function ownSyncUI() {
+const m = state.ownMode;
+$('ownModeNote').textContent = OWN_NOTE[m];
+$('ownSynthDurSection').classList.toggle('hidden', m === 'asis');
+$('ownGrainSection').classList.toggle('hidden', m !== 'granular');
+$('ownTapsSection').classList.toggle('hidden', m !== 'match');
+const loopOk = m !== 'asis';
+$('ownLoop').disabled = !loopOk;
+$('ownLoop').closest('.switch-row').classList.toggle('dimmed', !loopOk);
+$('ownTarget').disabled = state.ownNorm === 'none';
+$('ownTargetNum').disabled = state.ownNorm === 'none';
+$('ownTargetUnit').textContent = NORM_UNIT[state.ownNorm];
+syncReverbUI();
+}
+function ownInfoUpdate() {
+const el = $('ownInfo');
+if (!own.arrays) { el.textContent = 'Источник не выбран'; return; }
+const n = own.arrays[0].length;
+el.textContent = own.name + ' · ' + fmtTimeMs(n / own.sr) + ' · ' + own.sr + ' Гц · ' + (own.ch === 2 ? 'стерео' : 'моно') + ' · ' + fmtSize(n * own.ch * 4) + ' в памяти';
+}
+function ownAbort() {
+if (!own.rec) return;
+own.rec = false;
+if (own.timer) { clearInterval(own.timer); own.timer = 0; }
+try { if (own.node) { own.node.port.postMessage({ stop: true }); own.node.disconnect(); } } catch (e) {}
+try { if (own.sp) { own.sp.onaudioprocess = null; own.sp.disconnect(); } } catch (e) {}
+try { if (own.sink) own.sink.disconnect(); } catch (e) {}
+try { if (own.stream) own.stream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {}
+own.node = null; own.sp = null; own.sink = null; own.stream = null;
+$('ownRec').classList.remove('on');
+$('ownRecLabel').textContent = 'Записать';
+$('ownMeterFill').style.transform = 'scaleX(0)';
+$('ownMeterVal').textContent = '—';
+}
+function ownCollect(chunks) {
+if (!own.rec || !own.chunks) return;
+const n = chunks[0].length;
+const limit = own.sr * 600;
+if (own.frames >= limit) { ownFinish(); return; }
+const take = Math.min(n, limit - own.frames);
+for (let c = 0; c < own.chunks.length; c++) {
+const src = chunks[Math.min(c, chunks.length - 1)];
+own.chunks[c].push(take === n ? src.slice(0) : src.slice(0, take));
+}
+own.frames += take;
+const now = Date.now();
+if (now - own.meterT > 70) {
+own.meterT = now;
+let s = 0;
+for (let i = 0; i < n; i++) s += chunks[0][i] * chunks[0][i];
+const d = 20 * Math.log10(Math.max(Math.sqrt(s / n), 1e-9));
+$('ownMeterFill').style.transform = 'scaleX(' + clamp((d + 60) / 60, 0, 1).toFixed(3) + ')';
+$('ownMeterVal').textContent = d > -89 ? db(d, 1) + ' dBFS' : '—';
+}
+if (own.frames >= limit) ownFinish();
+}
+function ownFinish() {
+if (!own.rec) return;
+const chunks = own.chunks, frames = own.frames, sr = own.sr;
+ownAbort();
+if (!chunks || frames < sr * 0.2) { pFail('Запись слишком короткая'); return; }
+const arr = [];
+for (let c = 0; c < chunks.length; c++) {
+const d = new Float32Array(frames);
+let p = 0;
+for (let i = 0; i < chunks[c].length && p < frames; i++) { const b = chunks[c][i]; const n = Math.min(b.length, frames - p); d.set(b.subarray(0, n), p); p += n; }
+arr.push(d);
+}
+own.chunks = null;
+own.arrays = arr; own.sr = sr; own.ch = arr.length; own.name = 'Запись с микрофона';
+ownInfoUpdate(); refresh();
+ownGenerate();
+}
+async function ownEnsureRecWorklet() {
+if (own.workletTried) return own.workletOk;
+own.workletTried = true;
+const c = await ensureCtx();
+if (!c.audioWorklet) { own.workletOk = false; return false; }
+try {
+const src = "class WNRec extends AudioWorkletProcessor{constructor(){super();this.on=true;this.port.onmessage=(e)=>{if(e.data&&e.data.stop)this.on=false;};}process(inputs){if(!this.on)return false;const inp=inputs[0];if(inp&&inp.length&&inp[0].length){const n=inp[0].length;const out=[];const tr=[];for(let c=0;c<inp.length;c++){const b=inp[c].slice(0,n);out.push(b);tr.push(b.buffer);}this.port.postMessage(out,tr);}return true;}}registerProcessor('wnl-rec',WNRec);";
+await c.audioWorklet.addModule(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })));
+own.workletOk = true;
+} catch (e) { own.workletOk = false; }
+return own.workletOk;
+}
+async function ownStart() {
+if (own.rec || state.busy) return;
+if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { pFail('Браузер не даёт доступ к микрофону. Загрузите файл вместо записи'); return; }
+let stream;
+try {
+stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: { ideal: 2 } } });
+} catch (e) {
+const n = e && e.name ? e.name : '';
+if (n === 'NotAllowedError' || n === 'SecurityError') pFail('Доступ к микрофону запрещён. Разрешите его в настройках сайта или загрузите файл');
+else if (n === 'NotFoundError' || n === 'OverconstrainedError') pFail('Микрофон не найден. Загрузите файл вместо записи');
+else if (n === 'NotReadableError') pFail('Микрофон занят другим приложением');
+else pFail('Не удалось открыть микрофон: ' + friendly(e));
+return;
+}
+try {
+const c = await ensureCtx();
+own.stream = stream;
+own.sr = c.sampleRate;
+const track = stream.getAudioTracks()[0];
+const settings = track && track.getSettings ? track.getSettings() : {};
+const ch = Math.max(1, Math.min(2, settings.channelCount || 1));
+own.chunks = []; for (let i = 0; i < ch; i++) own.chunks.push([]);
+own.frames = 0; own.rec = true; own.t0 = Date.now(); own.meterT = 0;
+const srcNode = c.createMediaStreamSource(stream);
+own.sink = c.createGain(); own.sink.gain.value = 0;
+own.sink.connect(c.destination);
+const useWl = await ownEnsureRecWorklet();
+if (useWl) {
+const node = new AudioWorkletNode(c, 'wnl-rec', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [ch] });
+node.port.onmessage = function (e) { ownCollect(e.data); };
+srcNode.connect(node);
+node.connect(own.sink);
+own.node = node;
+} else {
+const sp = c.createScriptProcessor(4096, ch, ch);
+sp.onaudioprocess = function (e) {
+const b = e.inputBuffer;
+const out = [];
+for (let i = 0; i < b.numberOfChannels; i++) out.push(b.getChannelData(i).slice(0));
+ownCollect(out);
+};
+srcNode.connect(sp); sp.connect(own.sink);
+own.sp = sp;
+}
+own.srcNode = srcNode;
+$('ownRec').classList.add('on');
+$('ownRecLabel').textContent = 'Остановить';
+own.timer = setInterval(function () {
+const el = Math.min(600, (Date.now() - own.t0) / 1000);
+$('ownTime').textContent = fmtTime(el) + ' / 10:00';
+if (el >= 600) ownFinish();
+}, 250);
+$('ownTime').textContent = '0:00 / 10:00';
+} catch (e) {
+ownAbort();
+pFail('Запись не запустилась: ' + friendly(e));
+}
+}
+function ownSpec() {
+const m = state.ownMode;
+const sr = own.sr;
+const spec = {
+sr: sr, channels: own.ch, bits: state.bitDepth, dither: state.dither,
+norm: state.ownNorm, target: state.ownTarget, seed: state.seed,
+fftSize: state.fftSize, window: state.window, dist: 'uniform', tilt: state.ownTilt,
+reverb: state.ownReverb, reverbPreset: state.ownPreset, reverbWet: state.ownWet,
+padA: Math.round(state.ownPadA * sr), padB: Math.round(state.ownPadB * sr),
+fadeIn: Math.round(state.ownFadeIn * sr), fadeOut: Math.round(state.ownFadeOut * sr),
+loop: m !== 'asis' && state.ownLoop
+};
+if (m === 'asis') {
+spec.source = 'arrays';
+spec.kind = 'own';
+spec.arrays = own.arrays.map(function (a) { return a.slice(); });
+spec.bodyFrames = own.arrays[0].length;
+spec.loop = false;
+} else {
+spec.source = 'arrays';
+spec.kind = m;
+spec.arrays = own.arrays.map(function (a) { return a.slice(); });
+spec.bodyFrames = Math.max(1, Math.round(state.ownDur * sr));
+spec.taps = state.ownTaps;
+spec.grain = state.ownGrain;
+}
+return spec;
+}
+function ownGenerate() {
+if (!own.arrays || state.busy) return;
+nextSeed();
+const spec = ownSpec();
+const names = { asis: 'Свой звук', match: 'Спектральный двойник', granular: 'Гранулярная текстура' };
+job($('ownGen'), 'Генерация…', async function (hooks) {
+const r = await runDsp('run', spec, hooks);
+applyResult(r, 'own-' + state.ownMode, { label: names[state.ownMode] + (state.ownReverb ? ' · пространство' : '') });
+});
+}
+$('ownRec').addEventListener('click', function () { if (own.rec) ownFinish(); else ownStart(); });
+$('ownFile').addEventListener('change', function () {
+const f = $('ownFile').files[0]; if (!f) return;
+ownAbort();
+job($('ownGen'), 'Генерация…', async function (hooks) {
+hooks.progress(0.05, 'Чтение файла'); await tick();
+const ab = await readBuf(f);
+pBusy('Декодирование'); await tick();
+const c = await ensureCtx();
+let dec;
+try { dec = await c.decodeAudioData(ab); } catch (e) { throw new Error('Не удалось прочитать аудио — WAV, MP3, OGG, M4A, FLAC'); }
+const sr = dec.sampleRate, len = dec.length, ch = Math.min(2, dec.numberOfChannels);
+if (len / sr > 600) throw new Error('Файл длиннее 10 минут');
+if (len * ch * 4 > 300 * 1048576) throw new Error('Файл слишком большой для обработки в памяти');
+const arr = [];
+for (let k = 0; k < ch; k++) arr.push(dec.getChannelData(k).slice());
+dec = null;
+own.arrays = arr; own.sr = sr; own.ch = ch; own.name = f.name;
+$('ownFileName').textContent = f.name;
+ownInfoUpdate();
+const spec = ownSpec();
+const names = { asis: 'Свой звук', match: 'Спектральный двойник', granular: 'Гранулярная текстура' };
+const r = await runDsp('run', spec, hooks);
+applyResult(r, 'own-' + state.ownMode, { label: names[state.ownMode] + (state.ownReverb ? ' · пространство' : '') });
+});
+});
+$('ownMode').addEventListener('change', function () { state.ownMode = $('ownMode').value; ownSyncUI(); save(); });
+$('ownTaps').addEventListener('change', function () { state.ownTaps = parseInt($('ownTaps').value, 10); save(); });
+$('ownNorm').addEventListener('change', function () { state.ownNorm = $('ownNorm').value; state.ownTarget = NORM_DEF[state.ownNorm]; $('ownTarget').value = state.ownTarget; $('ownTargetNum').value = state.ownTarget; ownSyncUI(); save(); });
+$('ownReverb').addEventListener('change', function () { state.ownReverb = $('ownReverb').checked; syncReverbUI(); save(); });
+$('ownReverbPreset').addEventListener('change', function () { state.ownPreset = $('ownReverbPreset').value; save(); });
+$('ownLoop').addEventListener('change', function () { state.ownLoop = $('ownLoop').checked; save(); });
+$('ownGen').addEventListener('click', ownGenerate);
+$('ownWav').addEventListener('click', function () { $('dlWavBtn').click(); });
+$('ownMp3').addEventListener('click', function () { $('dlMp3Btn').click(); });
+
+const wf = $('waveform');
+let wDrag = null;
+function waveFrac(e) {
+const r = wf.getBoundingClientRect();
+return clamp((e.clientX - r.left) / Math.max(1, r.width), 0, 1);
+}
+function waveZoom(factor, anchor) {
+if (!state.analysis) return;
+const span = waveView.b - waveView.a;
+const ns = clamp(span * factor, 0.0005, 1);
+const a = waveView.a + (span - ns) * anchor;
+waveView.a = clamp(a, 0, 1 - ns);
+waveView.b = waveView.a + ns;
+drawWave();
+}
+wf.addEventListener('pointerdown', function (e) {
+if (!state.analysis || !(audioEl.duration > 0)) return;
+try { wf.setPointerCapture(e.pointerId); } catch (x) {}
+const f = waveFrac(e);
+wDrag = { f: f, x: e.clientX, pan: e.shiftKey, a: waveView.a, b: waveView.b, moved: false };
+});
+wf.addEventListener('pointermove', function (e) {
+if (!wDrag) return;
+if (Math.abs(e.clientX - wDrag.x) > 3) wDrag.moved = true;
+if (!wDrag.moved) return;
+const f = waveFrac(e);
+if (wDrag.pan) {
+const span = wDrag.b - wDrag.a;
+const d = (wDrag.f - f) * span;
+const a = clamp(wDrag.a + d, 0, 1 - span);
+waveView.a = a; waveView.b = a + span;
+} else {
+const t0 = waveView.a + (waveView.b - waveView.a) * wDrag.f;
+const t1 = waveView.a + (waveView.b - waveView.a) * f;
+waveView.sa = Math.min(t0, t1); waveView.sb = Math.max(t0, t1);
+}
+drawWave();
+});
+function waveEnd(e) {
+if (!wDrag) return;
+const d = wDrag; wDrag = null;
+if (!d.moved && audioEl.duration > 0) {
+const t = waveView.a + (waveView.b - waveView.a) * d.f;
+audioEl.currentTime = clamp(t, 0, 0.999) * audioEl.duration;
+seekBar.value = Math.floor(audioEl.currentTime / audioEl.duration * 1000);
+timeText(); updateMeters(); drawWave();
+} else if (!d.pan && waveView.sb - waveView.sa < 0.0008) {
+waveView.sa = -1; waveView.sb = -1; drawWave();
+}
+}
+wf.addEventListener('pointerup', waveEnd);
+wf.addEventListener('pointercancel', function () { wDrag = null; });
+wf.addEventListener('wheel', function (e) {
+if (!state.analysis) return;
+e.preventDefault();
+waveZoom(e.deltaY < 0 ? 0.8 : 1.25, waveFrac(e));
+}, { passive: false });
+wf.addEventListener('dblclick', function () {
+waveView.a = 0; waveView.b = 1; waveView.sa = -1; waveView.sb = -1; drawWave();
+});
+$('waveZoomIn').addEventListener('click', function () { waveZoom(0.6, 0.5); });
+$('waveZoomOut').addEventListener('click', function () { waveZoom(1.6, 0.5); });
+$('waveFit').addEventListener('click', function () { waveView.a = 0; waveView.b = 1; drawWave(); });
+$('waveSelClear').addEventListener('click', function () { waveView.sa = -1; waveView.sb = -1; drawWave(); });
+
 $('viewToggle').addEventListener('click', function (e) { const b = e.target.closest('.view-btn'); if (!b || b.disabled) return; setView(b.dataset.view); });
 function cursor(e) {
 const a = state.analysis; if (!a) return;
@@ -2453,7 +3058,7 @@ $('welchCanvas').addEventListener('pointerleave', function () { $('cursorRead').
 
 $('tabs').addEventListener('click', function (e) {
 const t = e.target.closest('.tab'); if (!t) return;
-if (state.mode === 'lab' && t.dataset.tab !== 'lab') { stopLab(); liveStop(); resetLab(); }
+if (state.mode === 'lab' && t.dataset.tab !== 'lab') { stopLab(); liveStop(); ownAbort(); resetLab(); }
 $('tabs').querySelectorAll('.tab').forEach(function (x) { x.classList.remove('active'); x.setAttribute('aria-selected', 'false'); });
 t.classList.add('active'); t.setAttribute('aria-selected', 'true');
 state.mode = t.dataset.tab;
@@ -2465,7 +3070,7 @@ syncView(); save();
 });
 $('labTools').addEventListener('click', function (e) {
 const b = e.target.closest('.lab-tool'); if (!b) return;
-stopLab(); liveStop(); resetLab();
+stopLab(); liveStop(); ownAbort(); resetLab();
 $('labTools').querySelectorAll('.lab-tool').forEach(function (x) { x.classList.remove('active'); x.setAttribute('aria-checked', 'false'); });
 b.classList.add('active'); b.setAttribute('aria-checked', 'true');
 state.labTool = b.dataset.tool;
@@ -2479,13 +3084,13 @@ const knob = t && t.classList && t.classList.contains('knob');
 if (e.code === 'Space') { if (typing || tag === 'BUTTON' || knob) return; e.preventDefault(); togglePlay(); }
 else if (e.code === 'ArrowLeft' || e.code === 'ArrowRight') { if (typing || knob) return; e.preventDefault(); seekBy((e.code === 'ArrowLeft' ? -1 : 1) * (e.shiftKey ? 30 : 5)); }
 else if (e.code === 'Home') { if (typing || knob) return; e.preventDefault(); seekBy(-1e9); }
-else if (e.code === 'Escape' && state.busy) cancelJob();
+else if (e.code === 'Escape') { if (state.busy) cancelJob(); else if (own.rec) ownFinish(); }
 });
 if (typeof ResizeObserver === 'function') {
 new ResizeObserver(function () { if (resizeRaf) cancelAnimationFrame(resizeRaf); resizeRaf = requestAnimationFrame(function () { resizeRaf = 0; renderView(); }); }).observe($('visualizer'));
 new ResizeObserver(measureRail).observe($('progressTrack'));
 } else window.addEventListener('resize', function () { renderView(); measureRail(); });
-window.addEventListener('beforeunload', function () { if (state.url) URL.revokeObjectURL(state.url); save(); });
+window.addEventListener('beforeunload', function () { ownAbort(); if (state.url) URL.revokeObjectURL(state.url); save(); });
 
 initWorker();
 initMedia();
@@ -2502,9 +3107,18 @@ $('mp3Rate').value = String(state.mp3Rate);
 $('ditherToggle').checked = state.dither;
 $('keepLevelToggle').checked = state.keepLevel;
 $('exactToggle').checked = state.exact;
+$('reverbToggle').checked = state.reverb;
+$('reverbPreset').value = state.reverbPreset;
+$('liveReverbToggle').checked = state.liveReverb;
+$('liveReverbPreset').value = state.liveReverbPreset;
 $('curveTaps').value = String(state.curveTaps);
 $('signalKind').value = state.signalKind;
-$('signalNote').textContent = SIG_NOTE[state.signalKind];
+$('ownMode').value = state.ownMode;
+$('ownTaps').value = String(state.ownTaps);
+$('ownNorm').value = state.ownNorm;
+$('ownReverb').checked = state.ownReverb;
+$('ownReverbPreset').value = state.ownPreset;
+$('ownLoop').checked = state.ownLoop;
 $('seedNum').value = state.seed;
 $('seedLock').classList.toggle('active', state.seedAuto);
 $('seedLock').textContent = state.seedAuto ? 'Авто' : 'Фикс';
@@ -2519,6 +3133,11 @@ audioEl.volume = state.volume / 100;
 $(g[0]).querySelectorAll('.seg').forEach(function (x) { const on = x.dataset[g[1]] === g[2]; x.classList.toggle('active', on); x.setAttribute('aria-checked', on ? 'true' : 'false'); });
 });
 syncNormUI();
+syncDitherUI();
+syncSignalUI();
+syncCurveRange();
+ownSyncUI();
+ownInfoUpdate();
 setLoop(state.loop);
 $('tiltNote').textContent = 'Добавляет ' + db(-3.0103 * state.tilt, 2) + ' дБ/окт к выбранному виду шума';
 estimate();
