@@ -344,6 +344,56 @@ return function (out, n) { for (let i = 0; i < n; i++) { let v = src(); for (let
 }
 return wrap(function (out, n) { for (let i = 0; i < n; i++) out[i] = src(); });
 }
+function moodEngine(p, sr, seed, ch) {
+const r = rng((seed ^ 0x5bf03635) >>> 0);
+const lanes = [];
+for (let c = 0; c < ch; c++) {
+const sd = (seed + c * 1013904223) >>> 0;
+lanes.push({
+base: noiseGen('alpha', sr, sd, { alpha: p.a }),
+warm: bqNew('ls', 200, 0.9, p.warm, sr),
+air: bqNew('hs', 8000, 0.9, p.air, sr),
+foc: bqNew('peak', p.focus, p.fq, p.fg, sr)
+});
+}
+const twoPi = 2 * Math.PI;
+let idx = 0, wander = 0, target = 0, wctl = 0, ctl = 0;
+return {
+fill: function (bufs, n) {
+for (let c = 0; c < ch; c++) {
+const L = lanes[c];
+L.base(bufs[c], n);
+const d = bufs[c];
+for (let i = 0; i < n; i++) d[i] = bqRun(L.foc, bqRun(L.air, bqRun(L.warm, d[i])));
+}
+for (let i = 0; i < n; i++) {
+if (wctl === 0) { target = (r() * 2 - 1) * p.drift; wctl = Math.max(1, Math.round(sr * 0.9)); }
+wctl--;
+wander += (target - wander) * 0.0004;
+if (ctl === 0) {
+const fc = p.focus * Math.pow(2, wander * 0.35);
+const ag = p.air + wander * 2.2;
+for (let c = 0; c < ch; c++) {
+bqSet(lanes[c].foc, 'peak', fc, p.fq, p.fg, sr);
+bqSet(lanes[c].air, 'hs', 8000, 0.9, ag, sr);
+}
+ctl = 256;
+}
+ctl--;
+const t = idx / sr;
+const am = 1 - p.mod * 0.5 * (1 + Math.sin(twoPi * p.rate * t));
+const g = am * (1 + wander * 0.3);
+if (ch === 2) {
+const m = (bufs[0][i] + bufs[1][i]) * 0.5;
+const s = (bufs[0][i] - bufs[1][i]) * 0.5 * p.width;
+bufs[0][i] = (m + s) * g;
+bufs[1][i] = (m - s) * g;
+} else bufs[0][i] *= g;
+idx++;
+}
+}
+};
+}
 function synthGen(kind, sr, seed, drift, alpha) {
 const r = rng(seed);
 const base = noiseGen('alpha', sr, (seed ^ 0x9e3779b9) >>> 0, { alpha: alpha });
@@ -687,7 +737,7 @@ for (let i = 0; i < n * ch; i++) { w(dv, p, src[i] * gain); p += bps; }
 parts.push(new Uint8Array(out));
 frame += n;
 if (Date.now() - t0 > 40) {
-hooks.progress(from + (to - from) * frame / total, 'Квантование ' + bits + ' бит');
+hooks.progress(from + (to - from) * frame / total, 'quant:' + bits);
 await hooks.tick();
 if (hooks.cancelled()) throw new Error('cancelled');
 t0 = Date.now();
@@ -696,6 +746,36 @@ t0 = Date.now();
 const blob = new Blob(parts, { type: 'audio/wav' });
 parts.length = 0;
 return blob;
+}
+async function downmixMaster(master, sr, ch, hooks) {
+const total = Math.floor(master.size / (ch * 4));
+const parts = [];
+const framesPer = Math.max(512, Math.floor(131072 / (ch * 4)));
+const K = 0.7071;
+let pos = 0, pk = 0, t0 = Date.now();
+while (pos < total) {
+const n = Math.min(framesPer, total - pos);
+const ab = await readSlice(master, pos * ch * 4, (pos + n) * ch * 4);
+const s = new Float32Array(ab);
+const out = new Float32Array(n * 2);
+for (let i = 0; i < n; i++) {
+const b = i * ch;
+const fl = s[b], fr = s[b + 1], fc = s[b + 2], lfe = s[b + 3];
+let l, r;
+if (ch === 6) { l = fl + K * fc + K * s[b + 4] + 0.5 * lfe; r = fr + K * fc + K * s[b + 5] + 0.5 * lfe; }
+else { l = fl + K * fc + K * s[b + 6] + 0.5 * s[b + 4] + 0.5 * lfe; r = fr + K * fc + K * s[b + 7] + 0.5 * s[b + 5] + 0.5 * lfe; }
+out[i * 2] = l; out[i * 2 + 1] = r;
+const al = l < 0 ? -l : l, ar = r < 0 ? -r : r;
+if (al > pk) pk = al;
+if (ar > pk) pk = ar;
+}
+parts.push(new Uint8Array(out.buffer));
+pos += n;
+if (Date.now() - t0 > 40) { hooks.progress(0.86 + 0.06 * pos / total, 'downmix'); await hooks.tick(); if (hooks.cancelled()) throw new Error('cancelled'); t0 = Date.now(); }
+}
+const blob = new Blob(parts, { type: 'application/octet-stream' });
+parts.length = 0;
+return { blob: blob, peak: pk };
 }
 async function fillChunked(gen, arr, hooks, from, to, label) {
 const CH = 65536;
@@ -766,12 +846,12 @@ if (j < fade) g = j / fade;
 if (j >= seg - fade) g = (seg - 1 - j) / fade;
 d[i] = Math.sin(2 * Math.PI * f * j / sr) * lvl * g;
 }
-if (Date.now() - t0 > 30) { hooks.progress(0.02 + 0.06 * c / ch, 'Генерация обхода каналов'); await hooks.tick(); if (hooks.cancelled()) throw new Error('cancelled'); t0 = Date.now(); }
+if (Date.now() - t0 > 30) { hooks.progress(0.02 + 0.06 * c / ch, 'genSurroundId'); await hooks.tick(); if (hooks.cancelled()) throw new Error('cancelled'); t0 = Date.now(); }
 }
 return out;
 }
 for (let c = 0; c < ch; c++) {
-await fillChunked(noiseGen('pink', sr, (spec.seed + c * 7919) >>> 0, {}), out[c], hooks, 0.02 + 0.06 * c / ch, 0.02 + 0.06 * (c + 1) / ch, 'Генерация каналов');
+await fillChunked(noiseGen('pink', sr, (spec.seed + c * 7919) >>> 0, {}), out[c], hooks, 0.02 + 0.06 * c / ch, 0.02 + 0.06 * (c + 1) / ch, 'genChannels');
 if (c === 3) {
 const lp1 = bqNew('lp', 120, 0.7, 0, sr), lp2 = bqNew('lp', 120, 0.7, 0, sr);
 const d = out[c];
@@ -808,7 +888,7 @@ if (kind === 'sweep') {
 const f1 = 20, f2 = Math.min(20000, sr * 0.47), k = Math.log(f2 / f1);
 await loop(function (a, b) {
 for (let i = a; i < b; i++) { const t = i / sr; const ph = 2 * Math.PI * f1 * dur / k * (Math.exp(k * t / dur) - 1); const v = Math.sin(ph) * lvl * env(i); if (useL) L[i] = v; if (useR) R[i] = v; }
-}, 'Генерация свипа');
+}, 'genSweep');
 } else if (kind === 'steps') {
 const bands = [25, 31.5, 40, 50, 63, 80, 100, 125, 160, 200, 250, 315, 400, 500, 630, 800, 1000, 1250, 1600, 2000, 2500, 3150, 4000, 5000, 6300, 8000, 10000, 12500, 16000, 20000].filter(function (f) { return f < sr * 0.47; });
 const seg = Math.max(1, Math.floor(n / bands.length));
@@ -820,16 +900,16 @@ const v = Math.sin(2 * Math.PI * f * j / sr) * lvl * g;
 const i = b * seg + j;
 if (i < n) { if (useL) L[i] = v; if (useR) R[i] = v; }
 }
-if (Date.now() - t0 > 30) { hooks.progress(0.02 + 0.06 * b / bands.length, 'Генерация ступеней'); await hooks.tick(); if (hooks.cancelled()) throw new Error('cancelled'); t0 = Date.now(); }
+if (Date.now() - t0 > 30) { hooks.progress(0.02 + 0.06 * b / bands.length, 'genSteps'); await hooks.tick(); if (hooks.cancelled()) throw new Error('cancelled'); t0 = Date.now(); }
 }
 } else if (kind === 'tone') {
 await loop(function (a, b) {
 for (let i = a; i < b; i++) { const v = Math.sin(2 * Math.PI * 1000 * i / sr) * lvl * env(i); if (useL) L[i] = v; if (useR) R[i] = v; }
-}, 'Генерация тона');
+}, 'genTone');
 } else if (kind === 'pinkband') {
 const h = firDesign(2048, sr, magFor('pinkband', 0, sr, null));
-await fillChunked(firGen(h, rng(spec.seed), false), L, hooks, 0.02, 0.05, 'Генерация полосового шума');
-await fillChunked(firGen(h, rng((spec.seed + 7717) >>> 0), false), R, hooks, 0.05, 0.08, 'Генерация полосового шума');
+await fillChunked(firGen(h, rng(spec.seed), false), L, hooks, 0.02, 0.05, 'genBand');
+await fillChunked(firGen(h, rng((spec.seed + 7717) >>> 0), false), R, hooks, 0.05, 0.08, 'genBand');
 let pk = 0;
 for (let i = 0; i < n; i++) { const a = L[i] < 0 ? -L[i] : L[i]; if (a > pk) pk = a; }
 const k = pk > 1e-9 ? lvl / pk : 1;
@@ -849,7 +929,7 @@ v = Math.max(0, Math.sin(2 * Math.PI * f * t)) * lvl * 1.6 * e;
 }
 if (useL) L[i] = v; if (useR) R[i] = v;
 }
-}, 'Генерация импульсов');
+}, 'genPulses');
 } else if (kind === 'channels') {
 const seg = Math.max(1, Math.floor(n / 6));
 for (let s = 0; s < 6; s++) {
@@ -878,12 +958,12 @@ else if (j >= seg - xf) sign *= (seg - 1 - j) / xf;
 const v = Math.sin(2 * Math.PI * 440 * i / sr) * lvl * env(i);
 L[i] = v; R[i] = v * sign;
 }
-}, 'Генерация фазового теста');
+}, 'genPhase');
 } else {
 const f = sr / 4, amp = Math.pow(10, -0.1 / 20) / Math.SQRT1_2;
 await loop(function (a, b) {
 for (let i = a; i < b; i++) { const v = Math.sin(2 * Math.PI * f * i / sr + Math.PI / 4) * amp * env(i); if (useL) L[i] = v; if (useR) R[i] = v; }
-}, 'Генерация выброса');
+}, 'genIsp');
 }
 return [L, R];
 }
@@ -892,11 +972,11 @@ const sr = spec.sr, n = Math.max(1, Math.round(sr * spec.dur));
 const arr = [new Float32Array(n), new Float32Array(n)];
 if (spec.band === 'speech') {
 const h = firDesign(2048, sr, magFor('pinkband', 0, sr, null));
-await fillChunked(firGen(h, rng(spec.seed), false), arr[0], hooks, 0.02, 0.05, 'Генерация калибровки');
-await fillChunked(firGen(h, rng((spec.seed + 7717) >>> 0), false), arr[1], hooks, 0.05, 0.08, 'Генерация калибровки');
+await fillChunked(firGen(h, rng(spec.seed), false), arr[0], hooks, 0.02, 0.05, 'genCalib');
+await fillChunked(firGen(h, rng((spec.seed + 7717) >>> 0), false), arr[1], hooks, 0.05, 0.08, 'genCalib');
 } else {
-await fillChunked(noiseGen('pink', sr, spec.seed, {}), arr[0], hooks, 0.02, 0.05, 'Генерация калибровки');
-await fillChunked(noiseGen('pink', sr, (spec.seed + 7717) >>> 0, {}), arr[1], hooks, 0.05, 0.08, 'Генерация калибровки');
+await fillChunked(noiseGen('pink', sr, spec.seed, {}), arr[0], hooks, 0.02, 0.05, 'genCalib');
+await fillChunked(noiseGen('pink', sr, (spec.seed + 7717) >>> 0, {}), arr[1], hooks, 0.05, 0.08, 'genCalib');
 }
 for (let c = 0; c < 2; c++) {
 const on = spec.chan === 'both' || (spec.chan === 'l' && c === 0) || (spec.chan === 'r' && c === 1);
@@ -923,7 +1003,7 @@ const s = q / 32767;
 out[i] = s;
 const a = s < 0 ? -s : s;
 if (a > pk) pk = a;
-if ((i & 65535) === 65535 && Date.now() - t0 > 30) { hooks.progress(0.02 + 0.06 * i / n, 'Генерация тона'); await hooks.tick(); if (hooks.cancelled()) throw new Error('cancelled'); t0 = Date.now(); }
+if ((i & 65535) === 65535 && Date.now() - t0 > 30) { hooks.progress(0.02 + 0.06 * i / n, 'genTone'); await hooks.tick(); if (hooks.cancelled()) throw new Error('cancelled'); t0 = Date.now(); }
 }
 const g = pk > 1e-12 ? Math.pow(10, -3 / 20) / pk : 1;
 for (let i = 0; i < n; i++) out[i] *= g;
@@ -934,7 +1014,7 @@ if (spec.source === 'arrays') return spec.arrays;
 if (spec.source === 'signal') return await signalArrays(spec, hooks);
 if (spec.source === 'calib') return await calibArrays(spec, hooks);
 if (spec.source === 'perc') {
-hooks.progress(0.04, 'Генерация удара');
+hooks.progress(0.04, 'genHit');
 await hooks.tick();
 if (hooks.cancelled()) throw new Error('cancelled');
 const a = percArrays(spec.percType, spec.sr, spec.seed);
@@ -948,11 +1028,11 @@ const d = await ditherArrays(spec.tpdf, spec.sr, hooks);
 spec.boostDb = d.boostDb;
 return [d.arr];
 }
-throw new Error('Неизвестный источник');
+throw new Error('bad-source');
 }
 async function render(spec, hooks) {
 const sr = spec.sr;
-let arrays = null, gens = null, srcArrays = null;
+let arrays = null, gens = null, srcArrays = null, mood = null;
 if (spec.source !== 'gen') arrays = await buildArrays(spec, hooks);
 if (spec.kind === 'match' || spec.kind === 'granular') { srcArrays = arrays; arrays = null; }
 const ch = spec.channels;
@@ -966,32 +1046,41 @@ const loopFade = loop ? Math.max(1, Math.min(Math.floor(sr * 0.25), body >> 2)) 
 const CH = 16384;
 const bufs = []; for (let c = 0; c < ch; c++) bufs.push(new Float32Array(CH));
 if (!arrays) {
+if (spec.kind === 'mood') mood = moodEngine(spec.profile, sr, spec.seed, ch);
+else if (spec.kind === 'granular' && srcArrays && srcArrays.length) {
 gens = [];
-let matchAvg = null;
-if (spec.kind === 'match' && srcArrays && srcArrays.length) {
-hooks.progress(0.09, 'Замер спектра записи');
+for (let c = 0; c < ch; c++) gens.push(granularGen(srcArrays[Math.min(c, srcArrays.length - 1)], sr, (spec.seed + c * 1013904223) >>> 0, spec.grain || 90));
+} else if (spec.kind === 'match' && srcArrays && srcArrays.length) {
+hooks.progress(0.09, 'measureSpectrum');
 await hooks.tick();
 if (hooks.cancelled()) throw new Error('cancelled');
-matchAvg = measureSpectrum(srcArrays[0], sr, 8192, 'hann');
-}
+const avg = measureSpectrum(srcArrays[0], sr, 8192, 'hann');
+gens = [];
+for (let c = 0; c < ch; c++) gens.push(firGen(firDesign(spec.taps || 4096, sr, magFor('match', spec.tilt, sr, avg)), rng((spec.seed + c * 1013904223) >>> 0), false));
+} else {
+gens = [];
 for (let c = 0; c < ch; c++) {
 const sd = (spec.seed + c * 1013904223) >>> 0;
 if (spec.kind === 'synth') gens.push(synthGen(spec.synthType, sr, sd, spec.drift, spec.alpha));
-else if (spec.kind === 'granular' && srcArrays && srcArrays.length) gens.push(granularGen(srcArrays[Math.min(c, srcArrays.length - 1)], sr, sd, spec.grain || 90));
-else if (spec.kind === 'match' && matchAvg) gens.push(firGen(firDesign(spec.taps || 4096, sr, magFor('match', spec.tilt, sr, matchAvg)), rng(sd), spec.dist === 'gauss'));
 else if (spec.exact || spec.kind === 'curve') {
 const mag = magFor(spec.kind === 'curve' ? 'curve' : spec.type, spec.tilt, sr, spec.curve);
 gens.push(firGen(firDesign(spec.taps || 4096, sr, mag), rng(sd), spec.dist === 'gauss'));
 } else gens.push(noiseGen(spec.type, sr, sd, { tilt: spec.tilt, dist: spec.dist }));
 }
 }
+}
+const fillBody = function (n) {
+if (arrays) { for (let c = 0; c < ch; c++) { const a = arrays[c]; for (let i = 0; i < n; i++) bufs[c][i] = a[i] || 0; } return; }
+if (mood) { mood.fill(bufs, n); return; }
+for (let c = 0; c < ch; c++) gens[c](bufs[c], n);
+};
 const rev = spec.reverb ? reverbNew(sr, ch, spec.reverbPreset, (spec.reverbWet === undefined ? 30 : spec.reverbWet) / 100) : null;
 const an = makeAnalyzer(sr, ch, total, { fftSize: spec.fftSize, window: spec.window, cols: 480, buckets: 1600, activeStart: padA, activeEnd: padA + body });
 const parts = [];
 const head = [], tail = [];
 if (loop) for (let c = 0; c < ch; c++) { head.push(new Float32Array(loopFade)); tail.push(new Float32Array(loopFade)); }
-let pos = 0, t0 = Date.now();
-hooks.progress(0.11, 'Генерация и измерения');
+let pos = 0, t0 = Date.now(), bodyPos = 0;
+hooks.progress(0.11, 'genMeasure');
 while (pos < total) {
 let limit = total;
 if (pos < padA) limit = padA; else if (pos < padA + body) limit = padA + body;
@@ -1000,6 +1089,7 @@ const inBody = pos >= padA && pos < padA + body;
 if (inBody) {
 const bi = pos - padA;
 if (arrays) { for (let c = 0; c < ch; c++) { const a = arrays[c]; for (let i = 0; i < n; i++) bufs[c][i] = a[bi + i] || 0; } }
+else if (mood) mood.fill(bufs, n);
 else { for (let c = 0; c < ch; c++) gens[c](bufs[c], n); }
 if (rev) rev.process(bufs, n);
 for (let i = 0; i < n; i++) {
@@ -1013,6 +1103,7 @@ bufs[c][i] = v;
 if (loop && idx < loopFade) head[c][idx] = v;
 }
 }
+bodyPos = bi + n;
 } else for (let c = 0; c < ch; c++) bufs[c].fill(0, 0, n);
 an.feed(bufs, n, pos);
 const ab = new ArrayBuffer(n * ch * 4);
@@ -1022,7 +1113,7 @@ for (let i = 0; i < n; i++) for (let c = 0; c < ch; c++) f[k++] = bufs[c][i];
 parts.push(new Uint8Array(ab));
 pos += n;
 if (Date.now() - t0 > 40) {
-hooks.progress(0.11 + 0.49 * pos / total, 'Генерация и измерения');
+hooks.progress(0.11 + 0.49 * pos / total, 'genMeasure');
 await hooks.tick();
 if (hooks.cancelled()) throw new Error('cancelled');
 t0 = Date.now();
@@ -1032,11 +1123,10 @@ if (loop) {
 let done = 0;
 while (done < loopFade) {
 const n = Math.min(CH, loopFade - done);
-for (let c = 0; c < ch; c++) {
-gens[c](bufs[c], n);
-for (let i = 0; i < n; i++) tail[c][done + i] = bufs[c][i];
-}
+if (mood) mood.fill(bufs, n);
+else { for (let c = 0; c < ch; c++) gens[c](bufs[c], n); }
 if (rev) rev.process(bufs, n);
+for (let c = 0; c < ch; c++) for (let i = 0; i < n; i++) tail[c][done + i] = bufs[c][i];
 done += n;
 }
 }
@@ -1077,9 +1167,17 @@ res.duration = total / sr; res.sr = sr; res.ch = ch;
 res.boostDb = spec.boostDb || 0;
 const forceBits = spec.source === 'dither' ? 16 : spec.bits;
 const forceDither = spec.source === 'dither' ? false : spec.dither;
-hooks.progress(0.64, 'Квантование');
-res.wav = await quantize(master, sr, ch, forceBits, forceDither, gain, hooks, 0.64, 1);
+hooks.progress(0.64, 'quant:' + forceBits);
+res.wav = await quantize(master, sr, ch, forceBits, forceDither, gain, hooks, 0.64, ch > 2 ? 0.86 : 1);
 res.bits = forceBits;
+if (ch > 2) {
+const dm = await downmixMaster(master, sr, ch, hooks);
+const trim = dm.peak > 0.99 ? 0.99 / dm.peak : 1;
+res.masterStereo = dm.blob;
+res.previewGain = gain * trim;
+hooks.progress(0.93, 'preview');
+res.preview = await quantize(dm.blob, sr, 2, 24, false, res.previewGain, hooks, 0.93, 1);
+}
 return res;
 }
 async function requantize(spec, hooks) {
@@ -1093,7 +1191,7 @@ const sp = spectralCore(sr, total, spec.fftSize, spec.window, 480);
 const framesPer = Math.max(1024, Math.floor(131072 / ch));
 const c0 = new Float32Array(framesPer);
 let pos = 0, t0 = Date.now();
-hooks.progress(0.02, 'Пересчёт спектра');
+hooks.progress(0.02, 'recalcSpectrum');
 while (pos < total) {
 const n = Math.min(framesPer, total - pos);
 const ab = await readSlice(spec.master, pos * ch * 4, (pos + n) * ch * 4);
@@ -1102,7 +1200,7 @@ for (let i = 0; i < n; i++) c0[i] = f[i * ch];
 sp.feed(c0, n, pos);
 pos += n;
 if (Date.now() - t0 > 40) {
-hooks.progress(0.02 + 0.95 * pos / total, 'Пересчёт спектра');
+hooks.progress(0.02 + 0.95 * pos / total, 'recalcSpectrum');
 await hooks.tick();
 if (hooks.cancelled()) throw new Error('cancelled');
 t0 = Date.now();
@@ -1116,48 +1214,489 @@ return { render: render, requantize: requantize, respectrum: respectrum, noiseGe
 const $ = function (id) { return document.getElementById(id); };
 const clamp = function (v, a, b) { return v < a ? a : (v > b ? b : v); };
 const DSP = dspCore();
+
+const STR = {
+tabsAria: ['Разделы', 'Sections'],
+langAria: ['Язык интерфейса', 'Interface language'],
+tabGen: ['Генератор', 'Generator'],
+tabMix: ['Наложение', 'Mix'],
+tabLab: ['Лаборатория', 'Lab'],
+noiseType: ['Тип шума', 'Noise type'],
+duration: ['Длительность', 'Duration'],
+durationAria: ['Длительность, секунды', 'Duration, seconds'],
+sec: ['сек', 'sec'],
+ms: ['мс', 'ms'],
+hz: ['Гц', 'Hz'],
+db: ['дБ', 'dB'],
+sampleRate: ['Частота дискретизации', 'Sample rate'],
+bitDepth: ['Битрейт', 'Bit depth'],
+bit16: ['16 бит', '16 bit'],
+bit24: ['24 бит', '24 bit'],
+bit32: ['32 бит', '32 bit'],
+ditherTitle: ['Дизеринг при 16 бит', 'Dither at 16 bit'],
+ditherSubOn: ['Убирает ступеньки квантования на тихих участках и длинных фейдах', 'Removes quantisation steps in quiet passages and long fades'],
+ditherSubOff: ['Работает только при 16 бит. При 24 и 32 бит квантование настолько мелкое, что дизеринг не нужен', 'Applies at 16 bit only. At 24 and 32 bit quantisation is fine enough that dither is unnecessary'],
+channels: ['Каналы', 'Channels'],
+stereo: ['Стерео', 'Stereo'],
+mono: ['Моно', 'Mono'],
+distribution: ['Распределение отсчётов', 'Sample distribution'],
+uniform: ['Равномерное', 'Uniform'],
+gaussian: ['Гауссово', 'Gaussian'],
+distNote: ['Равномерное: куртозис 1,8 (эксцесс −1,2) · крест-фактор 4,8 дБ. Гауссово: куртозис 3,0 (эксцесс 0) · крест-фактор 12–14 дБ', 'Uniform: kurtosis 1.8 (excess −1.2) · crest factor 4.8 dB. Gaussian: kurtosis 3.0 (excess 0) · crest factor 12–14 dB'],
+normalization: ['Нормализация', 'Normalisation'],
+normPeak: ['По пиковому уровню', 'By sample peak'],
+normTrue: ['По истинному пику', 'By true peak'],
+normRms: ['По RMS', 'By RMS'],
+normLufs: ['По громкости LUFS', 'By LUFS loudness'],
+normNone: ['Без нормализации', 'No normalisation'],
+targetLevel: ['Целевой уровень', 'Target level'],
+tiltTitle: ['Дополнительный наклон α', 'Additional tilt α'],
+tiltShort: ['Наклон α', 'Tilt α'],
+exactTitle: ['Точный спектр', 'Exact spectrum'],
+exactSub: ['Референсные кривые вместо фильтровых аппроксимаций. Медленнее в 3–5 раз', 'Reference curves instead of filter approximations. 3–5× slower'],
+space: ['Пространство', 'Space'],
+spacePreset: ['Пресет пространства', 'Space preset'],
+spaceAmount: ['Доля пространства', 'Space amount'],
+reverbTitle: ['Реверберация', 'Reverb'],
+reverbSub: ['Помещает шум в пространство. На стационарном шуме эффект тонкий, всего заметнее на ударах и записях', 'Places the noise in a room. Subtle on stationary noise, most audible on hits and recordings'],
+liveReverbSub: ['Реверберация поверх бесконечного шума', 'Reverb over the endless noise'],
+ownReverbSub: ['Добавить помещению ещё одно помещение', 'Add another room to the room'],
+fadeIn: ['Fade in', 'Fade in'],
+fadeOut: ['Fade out', 'Fade out'],
+padStart: ['Тишина в начале', 'Silence at start'],
+padEnd: ['Тишина в конце', 'Silence at end'],
+loopTitle: ['Повторять', 'Loop'],
+loopSub: ['Конец файла плавно переходит в начало. Фейды и тишина отключаются', 'The end fades into the beginning. Fades and silence are disabled'],
+ownLoopSub: ['Замкнуть результат в бесшовную петлю. Доступно для шума и текстуры', 'Close the result into a seamless loop. Available for noise and texture'],
+seed: ['Seed', 'Seed'],
+seedAria: ['Seed генератора', 'Generator seed'],
+seedRandom: ['Случайный', 'Random'],
+seedAuto: ['Авто', 'Auto'],
+seedFixed: ['Фикс', 'Fixed'],
+seedNote: ['Один seed и одни параметры дают бит-в-бит одинаковый файл', 'Same seed and same parameters give a bit-identical file'],
+mood: ['Настроение', 'Mood'],
+task: ['Задача', 'Task'],
+computedProfile: ['Вычисленный профиль', 'Computed profile'],
+generate: ['Сгенерировать', 'Generate'],
+generating: ['Генерация…', 'Generating…'],
+cancel: ['Отменить', 'Cancel'],
+clearSession: ['Очистить сохранённое', 'Clear saved session'],
+track: ['Трек', 'Track'],
+noise: ['Шум', 'Noise'],
+snrTitle: ['Отношение шум / трек', 'Noise / track ratio'],
+snrNote: ['−20 дБ — шум тише трека. 0 дБ — равная мощность. +10 дБ — шум громче трека, как в жёстких наборах данных', '−20 dB — noise below the track. 0 dB — equal power. +10 dB — noise above the track, as in harsh datasets'],
+keepLevelTitle: ['Сохранять уровень трека', 'Keep track level'],
+keepLevelSub: ['Без финальной нормализации: соотношение уровней остаётся физически честным', 'No final normalisation: the level relationship stays physically honest'],
+mixHint: ['Шум подмешивается без изменения длины и частоты трека. Мощность шума измеряется по 30-секундному участку того же потока', 'Noise is added without changing track length or sample rate. Noise power is measured over a 30-second stretch of the same stream'],
+mixNote: ['Частота берётся из трека, битрейт и дизеринг — из генератора', 'Sample rate comes from the track, bit depth and dither from the generator'],
+mixBtn: ['Наложить шум', 'Apply noise'],
+tool: ['Инструмент', 'Tool'],
+toolNotch: ['Вырез', 'Notch'],
+toolBin: ['Бинаурал', 'Binaural'],
+toolTest: ['Тест', 'A/B test'],
+toolLive: ['Живой шум', 'Live noise'],
+toolCurve: ['Кривая', 'Curve'],
+toolSignals: ['Сигналы', 'Signals'],
+toolDither: ['Дизеринг', 'Dither'],
+toolCalib: ['Калибровка', 'Calibration'],
+toolSynth: ['Синтез', 'Synthesis'],
+toolPerc: ['Перкуссия', 'Percussion'],
+toolOwn: ['Свой звук', 'Own sound'],
+notchFreq: ['Частота выреза', 'Notch frequency'],
+notchQ: ['Узость выреза', 'Notch width'],
+notchHint: ['Розовый шум с вырезанной узкой полосой. Применяется в исследованиях маскировки звона: вырез ставят на частоту звона. Чем больше Q, тем уже вырез', 'Pink noise with a narrow band removed. Used in tinnitus masking research: the notch is placed at the tinnitus pitch. Higher Q means a narrower notch'],
+notchCaution: ['Исследовательский инструмент, не медицинская процедура. Доказательная база такой маскировки ограничена, частоту звона определяет специалист', 'A research instrument, not a medical procedure. Evidence for this masking is limited; tinnitus pitch should be assessed by a specialist'],
+timer: ['Таймер', 'Timer'],
+timerOff: ['Выкл', 'Off'],
+timerMin: ['{0}м', '{0}m'],
+start: ['Включить', 'Start'],
+stop: ['Остановить', 'Stop'],
+binBase: ['Основной тон', 'Carrier tone'],
+binBeat: ['Разница между ушами', 'Interaural difference'],
+binHint: ['В левое ухо идёт тон, в правое — чуть выше. Разница воспринимается как медленная пульсация. Нужны наушники, фоном идёт тихий розовый шум', 'One tone goes to the left ear, a slightly higher one to the right. The difference is heard as a slow pulsation. Headphones required, quiet pink noise in the background'],
+binCaution: ['Привязка «4 Гц сон, 10 Гц фокус» — гипотеза, а не установленный факт: доказательная база слабая и противоречивая', 'The "4 Hz sleep, 10 Hz focus" mapping is a hypothesis, not an established fact: the evidence is weak and inconsistent'],
+rotSpeed: ['Скорость вращения', 'Rotation speed'],
+rotHint: ['Источник обходит голову по кругу. Позиция задаётся на звуковой частоте, поэтому вращение не замирает, когда вкладка уходит в фон. Нужны наушники', 'The source circles the head. Position is driven at audio rate, so rotation keeps going when the tab is backgrounded. Headphones required'],
+noiseKind: ['Вид шума', 'Noise kind'],
+testHint: ['Все виды выровнены по RMS, переключение идёт кроссфейдом. Слышна разница в тембре, а не в уровне. Численная проверка — на вкладке «Спектр»', 'All kinds are RMS-matched and switch with a crossfade. You hear timbre, not level. Check the numbers on the Spectrum tab'],
+knobLevel: ['Уровень', 'Level'],
+knobDrift: ['Дрейф', 'Drift'],
+knobTilt: ['Наклон', 'Tilt'],
+knobHint: ['Тяните ручку вверх и вниз, крутите колесом или используйте стрелки. Shift — точная подстройка, двойной клик — сброс', 'Drag the knob up and down, use the wheel or arrow keys. Shift for fine adjustment, double-click to reset'],
+outLevel: ['Выходной уровень', 'Output level'],
+inLevel: ['Уровень входа', 'Input level'],
+liveHint: ['Бесконечный шум без файла и без десятиминутного предела. Дрейф медленно водит срез и громкость, чтобы текстура не была механической', 'Endless noise with no file and no ten-minute limit. Drift slowly moves cutoff and level so the texture is not mechanical'],
+curveHint: ['Рисуйте АЧХ прямо в окне. Оси подписаны: слева низкие частоты, справа высокие, по вертикали усиление в дБ. Фильтр строится по вашему рисунку, поэтому АЧХ совпадает с ним', 'Draw the response right in the window. Axes are labelled: low frequencies left, high right, gain in dB vertically. The filter is built from your drawing, so the response matches it'],
+filterRes: ['Разрешение фильтра', 'Filter resolution'],
+taps2048: ['2048 отводов', '2048 taps'],
+taps4096: ['4096 отводов', '4096 taps'],
+taps8192: ['8192 отвода', '8192 taps'],
+curveReset: ['Сбросить в 0 дБ', 'Reset to 0 dB'],
+signal: ['Сигнал', 'Signal'],
+level: ['Уровень', 'Level'],
+signalLevelNote: ['Уровень задаёт амплитуду (пик). Для синуса RMS окажется на 3 дБ ниже', 'Level sets amplitude (peak). For a sine, RMS will be 3 dB lower'],
+channel: ['Канал', 'Channel'],
+both: ['Оба', 'Both'],
+ditherHint1: ['Тон 440 Гц на −90 dBFS — около одного младшего разряда 16 бит. Без дизеринга он превращается в ступеньки с гармониками, с дизерингом остаётся чистым на фоне шума', 'A 440 Hz tone at −90 dBFS is about one least significant bit at 16 bit. Without dither it becomes a staircase with harmonics; with dither it stays clean above the noise'],
+ditherHint2: ['Волна, спектр и измерения считаются уже после квантования, а результат поднят до −3 dBFS, чтобы искажения было видно и слышно', 'Waveform, spectrum and measurements are computed after quantisation, and the result is raised to −3 dBFS so the distortion is visible and audible'],
+ditherHint3: ['Этот тест всегда 16 бит и без повторного дизеринга, настройки генератора на него не влияют', 'This test is always 16 bit with no second dither pass; generator settings do not affect it'],
+ditherOff: ['Без дизеринга', 'Without dither'],
+ditherOn: ['С дизерингом', 'With dither'],
+calibHint: ['Розовый шум на −20 dBFS RMS для выравнивания мониторов. Полоса ограничена 500 Гц – 2 кГц по практике настройки речи, либо во всю полосу', 'Pink noise at −20 dBFS RMS for monitor alignment. Band-limited to 500 Hz – 2 kHz as in speech calibration, or full band'],
+band: ['Полоса', 'Band'],
+bandFull: ['Полная', 'Full'],
+calibNote: ['Всегда WAV 16 бит с дизерингом и всегда −20 dBFS RMS в активном канале', 'Always 16-bit WAV with dither and always −20 dBFS RMS in the active channel'],
+calibBtn: ['Сгенерировать −20 dBFS', 'Generate −20 dBFS'],
+texture: ['Текстура', 'Texture'],
+wind: ['Ветер', 'Wind'],
+rain: ['Дождь', 'Rain'],
+surf: ['Прибой', 'Surf'],
+synthAlpha: ['Наклон источника α', 'Source tilt α'],
+slowDrift: ['Медленный дрейф', 'Slow drift'],
+synthHint: ['Ветер — низкий гул с порывами, дождь — высокий шелест, прибой — медленные накаты. Дрейф добавляет случайное блуждание среза и громкости', 'Wind is a low rumble with gusts, rain a high hiss, surf slow swells. Drift adds random wandering of cutoff and level'],
+hit: ['Удар', 'Hit'],
+snare: ['Барабан', 'Snare'],
+hat: ['Тарелка', 'Hat'],
+kick: ['Бочка', 'Kick'],
+percHint: ['Барабан — хлопок с коротким тоном, тарелка — металлический шелест, бочка — низкий удар с падающей высотой. Каждый удар собирается из своего seed', 'Snare is a slap with a short tone, hat a metallic hiss, kick a low hit with falling pitch. Every hit is built from its own seed'],
+ownHint: ['Запишите фон помещения до 10 минут или загрузите готовый файл. Дальше его можно оставить как есть, превратить в стационарный шум с тем же спектром или в живую гранулярную текстуру', 'Record up to 10 minutes of room tone or load a file. Then keep it as is, turn it into stationary noise with the same spectrum, or into a living granular texture'],
+ownPrivacy: ['Запись хранится только в этом браузере и никуда не отправляется. Она сохраняется между обновлениями страницы, пока вы не очистите сессию', 'The recording stays in this browser and is never uploaded. It survives page reloads until you clear the session'],
+ownWhat: ['Что сделать', 'What to do'],
+ownAsis: ['Оставить как есть', 'Keep as is'],
+ownMatch: ['Стационарный шум по спектру', 'Stationary noise from spectrum'],
+ownGranular: ['Гранулярная текстура', 'Granular texture'],
+resultDuration: ['Длительность результата', 'Result duration'],
+grainSize: ['Размер зерна', 'Grain size'],
+dlWav: ['Скачать WAV', 'Download WAV'],
+dlMp3: ['Скачать MP3', 'Download MP3'],
+ownFormatNote: ['Формат и битрейт берутся из плеера внизу. Многоканальный WAV сохраняется со всеми каналами, MP3 делается из стерео-сведения', 'Format and bit depth come from the player below. Multichannel WAV keeps all channels; MP3 is made from a stereo downmix'],
+stageAria: ['Результат и измерения', 'Result and measurements'],
+viewAria: ['Вид анализа', 'Analysis view'],
+viewWave: ['Волна', 'Waveform'],
+viewSpectro: ['Спектрограмма', 'Spectrogram'],
+viewWelch: ['Спектр', 'Spectrum'],
+viewHist: ['Гистограмма', 'Histogram'],
+viewLoud: ['Громкость', 'Loudness'],
+waveAria: ['Форма волны', 'Waveform'],
+ltasAria: ['Таблица третьоктавных уровней', 'Third-octave level table'],
+curveAria: ['Редактор АЧХ', 'Response editor'],
+emptyText: ['Сгенерируйте шум, наложите его на трек или выберите инструмент', 'Generate noise, apply it to a track, or pick a tool'],
+zoomIn: ['Приблизить', 'Zoom in'],
+zoomOut: ['Отдалить', 'Zoom out'],
+zoomFit: ['Вся волна', 'Whole wave'],
+selClear: ['Сбросить выделение', 'Clear selection'],
+analysisWindow: ['Окно анализа', 'Analysis window'],
+windowFn: ['Окно', 'Window'],
+winHann: ['Ханна', 'Hann'],
+winHamming: ['Хэмминга', 'Hamming'],
+winBlackman: ['Блэкмана', 'Blackman'],
+winRect: ['Прямоуг.', 'Rect'],
+scale: ['Шкала', 'Scale'],
+lin: ['лин', 'lin'],
+top: ['Верх', 'Top'],
+range: ['Диапазон', 'Range'],
+topAria: ['Верх шкалы dBFS', 'Top of dBFS scale'],
+rangeAria: ['Динамический диапазон', 'Dynamic range'],
+recalc: ['Пересчитать', 'Recalculate'],
+quieter: ['тише', 'quieter'],
+louder: ['громче', 'louder'],
+welchCsv: ['Скачать спектр CSV', 'Download spectrum CSV'],
+ltasCsv: ['Скачать LTAS CSV', 'Download LTAS CSV'],
+metersAria: ['Измеритель громкости', 'Loudness meter'],
+meterM: ['M 400 мс', 'M 400 ms'],
+meterS: ['S 3 с', 'S 3 s'],
+meterI: ['I интегр.', 'I integrated'],
+truePeak: ['Истинный пик', 'True peak'],
+seekAria: ['Позиция воспроизведения', 'Playback position'],
+playTitle: ['Пробел', 'Space'],
+volume: ['Громкость', 'Volume'],
+dlBitDepth: ['Битрейт скачивания', 'Download bit depth'],
+mp3Bitrate: ['Битрейт MP3', 'MP3 bitrate'],
+kbps128: ['128 кбит', '128 kbps'],
+kbps192: ['192 кбит', '192 kbps'],
+kbps256: ['256 кбит', '256 kbps'],
+kbps320: ['320 кбит', '320 kbps'],
+play: ['Воспроизвести', 'Play'],
+pause: ['Пауза', 'Pause'],
+ready: ['Готов к работе', 'Ready'],
+done: ['Готово', 'Done'],
+cancelled: ['Отменено', 'Cancelled'],
+cancelledByUser: ['Отменено пользователем', 'Cancelled by user'],
+unknownError: ['Неизвестная ошибка', 'Unknown error'],
+memError: ['Не хватило памяти. Уменьшите длительность, частоту или битрейт', 'Out of memory. Reduce duration, sample rate or bit depth'],
+genMeasure: ['Генерация и измерения', 'Generating and measuring'],
+measureSpectrum: ['Замер спектра записи', 'Measuring recording spectrum'],
+recalcSpectrum: ['Пересчёт спектра', 'Recalculating spectrum'],
+downmix: ['Сведение в стерео', 'Downmixing to stereo'],
+preview: ['Стерео-превью', 'Stereo preview'],
+quantPrefix: ['Квантование', 'Quantising'],
+genSweep: ['Генерация свипа', 'Generating sweep'],
+genSteps: ['Генерация ступеней', 'Generating steps'],
+genTone: ['Генерация тона', 'Generating tone'],
+genBand: ['Генерация полосового шума', 'Generating band noise'],
+genPulses: ['Генерация импульсов', 'Generating pulses'],
+genPhase: ['Генерация фазового теста', 'Generating phase test'],
+genIsp: ['Генерация выброса', 'Generating overshoot'],
+genCalib: ['Генерация калибровки', 'Generating calibration'],
+genHit: ['Генерация удара', 'Generating hit'],
+genChannels: ['Генерация каналов', 'Generating channels'],
+genSurroundId: ['Генерация обхода каналов', 'Generating channel walk'],
+readingFile: ['Чтение файла', 'Reading file'],
+decodingTrack: ['Декодирование трека', 'Decoding track'],
+decoding: ['Декодирование', 'Decoding'],
+measuringTrack: ['Замер уровня трека', 'Measuring track level'],
+mixing: ['Наложение шума', 'Applying noise'],
+preparingMp3: ['Подготовка MP3', 'Preparing MP3'],
+encodingMp3: ['Кодирование MP3', 'Encoding MP3'],
+recalcJob: ['Пересчёт…', 'Recalculating…'],
+fftChanged: ['Параметры анализа изменены — нажмите «Пересчитать»', 'Analysis parameters changed — press Recalculate'],
+needResult: ['Сначала сгенерируйте результат', 'Generate a result first'],
+sessionRestored: ['Сессия восстановлена', 'Session restored'],
+sessionCleared: ['Сохранённая сессия очищена', 'Saved session cleared'],
+sessionSaveFail: ['Не удалось сохранить сессию: хранилище браузера переполнено', 'Could not save the session: browser storage is full'],
+noAudioSupport: ['Браузер не поддерживает звук', 'This browser does not support audio'],
+badAudio: ['Не удалось прочитать аудио — WAV, MP3, OGG, M4A, FLAC', 'Could not read the audio — WAV, MP3, OGG, M4A, FLAC'],
+trackTooLong: ['Трек длиннее 10 минут', 'Track is longer than 10 minutes'],
+trackTooBig: ['Трек слишком длинный для частоты {0} Гц', 'Track is too long for a {0} Hz sample rate'],
+trackSilent: ['Трек пустой или слишком тихий', 'Track is empty or too quiet'],
+noiseFail: ['Не удалось построить шум', 'Could not build the noise'],
+fileTooBig: ['Файл больше 180 МБ', 'File is larger than 180 MB'],
+fileLabel: ['Файл', 'File'],
+tooBigSuffix: ['— слишком большой', '— too large'],
+fileSize: ['Размер файла: {0}', 'File size: {0}'],
+noFile: ['Файл не выбран', 'No file selected'],
+chooseFile: ['Выбрать аудиофайл', 'Choose an audio file'],
+orLoadFile: ['или загрузить файл', 'or load a file'],
+noSource: ['Источник не выбран', 'No source selected'],
+record: ['Записать', 'Record'],
+recording: ['Остановить', 'Stop'],
+recTooShort: ['Запись слишком короткая', 'Recording is too short'],
+micUnsupported: ['Браузер не даёт доступ к микрофону. Загрузите файл вместо записи', 'This browser will not give microphone access. Load a file instead'],
+micDenied: ['Доступ к микрофону запрещён. Разрешите его в настройках сайта или загрузите файл', 'Microphone access denied. Allow it in site settings or load a file'],
+micNotFound: ['Микрофон не найден. Загрузите файл вместо записи', 'No microphone found. Load a file instead'],
+micBusy: ['Микрофон занят другим приложением', 'The microphone is in use by another app'],
+micFail: ['Не удалось открыть микрофон: {0}', 'Could not open the microphone: {0}'],
+recFail: ['Запись не запустилась: {0}', 'Recording did not start: {0}'],
+liveFail: ['Живой шум не запустился: {0}', 'Live noise did not start: {0}'],
+playBlocked: ['Нажмите ещё раз — браузер блокирует автозапуск', 'Press again — the browser is blocking autoplay'],
+playFail: ['Браузер не смог воспроизвести файл, но скачать его можно', 'The browser could not play this file, but you can still download it'],
+mp3Unavailable: ['MP3 пока недоступен: положите файл mp3-encoder.js рядом с index.html или включите интернет. WAV работает всегда', 'MP3 is unavailable: place mp3-encoder.js next to index.html or go online. WAV always works'],
+mp3StereoOnly: ['MP3 поддерживает только моно и стерео', 'MP3 supports mono and stereo only'],
+estimateBig: ['Слишком большой файл: {0}. Уменьшите длительность, частоту или битрейт', 'File too large: {0}. Reduce duration, sample rate or bit depth'],
+estimateOk: ['WAV ≈ {0} · {1} · {2}{3} · seed {4}', 'WAV ≈ {0} · {1} · {2}{3} · seed {4}'],
+loopSuffix: [' · по кругу', ' · looped'],
+sizeB: ['Б', 'B'],
+sizeKB: ['КБ', 'KB'],
+sizeMB: ['МБ', 'MB'],
+chipPeak: ['Пик', 'Peak'],
+chipTruePeak: ['Истинный пик', 'True peak'],
+chipRms: ['RMS акт.', 'RMS active'],
+chipCrest: ['Крест', 'Crest'],
+chipKurt: ['Эксцесс', 'Excess kurtosis'],
+chipCorr: ['Корр. L/R', 'L/R corr.'],
+chipSlope: ['Наклон', 'Slope'],
+chipChannels: ['Каналов', 'Channels'],
+chipClipping: ['Клиппинг', 'Clipping'],
+clippingNone: ['Клиппинга нет', 'No clipping'],
+clippingCount: ['{0} отсч.', '{0} samples'],
+limitedByPeak: ['Ограничено по пику', 'Limited by peak'],
+slopeUnit: ['дБ/окт', 'dB/oct'],
+welchSummary: ['Усреднение по {0} окнам · окно {1} · наклон {2} дБ/окт', 'Averaged over {0} windows · window {1} · slope {2} dB/oct'],
+ltasSummary: ['Сумма полос {0} dBFS RMS · полос {1}', 'Band sum {0} dBFS RMS · {1} bands'],
+ltasHeadBand: ['Полоса, Гц', 'Band, Hz'],
+ltasHeadEdges: ['Границы', 'Edges'],
+ltasHeadLevel: ['Уровень, dBFS', 'Level, dBFS'],
+ltasHeadRel: ['Отн., дБ', 'Rel., dB'],
+ltasHeadProfile: ['Профиль', 'Profile'],
+waveWindow: ['Окно {0} – {1} · {2} с', 'Window {0} – {1} · {2} s'],
+waveSelection: [' · выделение {0} с · пик {1} dBFS', ' · selection {0} s · peak {1} dBFS'],
+waveHint: ['Перетаскивание — выделение · колесо — зум · Shift+перетаскивание — сдвиг · двойной клик — вся волна', 'Drag to select · wheel to zoom · Shift+drag to pan · double-click for the whole wave'],
+noResult: ['Нет результата', 'No result'],
+histAxis: ['амплитуда после нормализации · логарифмическая частота', 'amplitude after normalisation · logarithmic count'],
+histGauss: ['гауссова огибающая', 'Gaussian envelope'],
+histStats: ['эксцесс {0} · асимметрия {1} · крест-фактор {2} дБ', 'excess kurtosis {0} · skewness {1} · crest factor {2} dB'],
+loudUnweighted: ['многоканальная сумма без взвешивания', 'multichannel sum, unweighted'],
+loudLegendM: ['M 400 мс', 'M 400 ms'],
+loudLegendS: ['S 3 с', 'S 3 s'],
+loudLegendTp: ['Истинный пик', 'True peak'],
+loudLegendI: ['I интегральная', 'I integrated'],
+slopedLegends: ['0 дБ/окт', '0 dB/oct'],
+cursorAvg: ['усреднение по {0} окнам', 'averaged over {0} windows'],
+perBand: ['dBFS на полосу', 'dBFS per band'],
+stageVisual: ['Визуализация', 'Visualisation'],
+timerLeft: ['Осталось {0}', '{0} left'],
+timerDone: ['Таймер завершён', 'Timer finished'],
+notchMeta: ['Вырез · {0} Гц · Q {1}', 'Notch · {0} Hz · Q {1}'],
+binMeta: ['Бинаурал · {0} Гц · разница {1} Гц', 'Binaural · {0} Hz · difference {1} Hz'],
+rotMeta: ['8D · скорость {0}', '8D · speed {0}'],
+testMeta: ['Тест · {0}', 'A/B · {0}'],
+liveMeta: ['Живой шум · {0} · {1} dBFS · бесконечно', 'Live noise · {0} · {1} dBFS · endless'],
+curveMeta: ['Кривая · {0} отводов', 'Curve · {0} taps'],
+mixMeta: ['Наложение · {0} · {1} дБ', 'Mix · {0} · {1} dB'],
+calibMeta: ['Калибровка −20 dBFS RMS · {0} · {1}', 'Calibration −20 dBFS RMS · {0} · {1}'],
+signalMeta: ['Сигнал · {0}', 'Signal · {0}'],
+ditherMeta: ['Тон −90 dBFS · 16 бит · {0}', 'Tone −90 dBFS · 16 bit · {0}'],
+ditherWith: ['с дизерингом', 'with dither'],
+ditherWithout: ['без дизеринга', 'without dither'],
+ownAsisLabel: ['Свой звук', 'Own sound'],
+ownMatchLabel: ['Спектральный двойник', 'Spectral twin'],
+ownGranularLabel: ['Гранулярная текстура', 'Granular texture'],
+spaceSuffix: [' · пространство', ' · space'],
+boostSuffix: [' · +{0} дБ', ' · +{0} dB'],
+micRecording: ['Запись с микрофона', 'Microphone recording'],
+ownInfoFmt: ['{0} · {1} · {2} Гц · {3} · {4} в памяти', '{0} · {1} · {2} Hz · {3} · {4} in memory'],
+surroundPreviewNote: ['Прослушивание идёт через стерео-сведение, WAV сохраняет все каналы', 'Monitoring uses a stereo downmix; the WAV keeps all channels'],
+chCount: ['{0} кан.', '{0} ch'],
+moodOffNote: ['Выключено — спектр задаётся типом шума и наклоном выше', 'Off — the spectrum comes from the noise type and tilt above'],
+taskOffNote: ['Выключено — настроение работает само по себе', 'Off — the mood works on its own'],
+moodTaskOverride: ['Настроение и задача задают спектр, уровень и пространство. Тип шума и наклон выше отключены', 'Mood and task define spectrum, level and space. Noise type and tilt above are disabled'],
+profileAlpha: ['Наклон α', 'Tilt α'],
+profileWarm: ['Тепло', 'Warmth'],
+profileAir: ['Воздух', 'Air'],
+profileFocus: ['Фокус', 'Focus'],
+profileMod: ['Пульсация', 'Modulation'],
+profileRate: ['Частота', 'Rate'],
+profileWidth: ['Ширина', 'Width'],
+profileLevel: ['Уровень', 'Level'],
+profileSpace: ['Пространство', 'Space'],
+profileNorm: ['Нормализация', 'Normalisation'],
+profileFormula: ['Профиль = среднее арифметическое выбранных пресетов по каждому параметру. Спектр: PSD ∝ f^−α, затем шелф 200 Гц, шелф 8 кГц и Presence-полоса; поверх — амплитудная модуляция и медленный дрейф.', 'Profile = arithmetic mean of the selected presets for every parameter. Spectrum: PSD ∝ f^−α, then a 200 Hz shelf, an 8 kHz shelf and a presence band; amplitude modulation and slow drift on top.'],
+profileFormulaOne: ['Профиль взят из одного пресета. Спектр: PSD ∝ f^−α, затем шелф 200 Гц, шелф 8 кГц и presence-полоса; поверх — амплитудная модуляция и медленный дрейф.', 'Profile taken from a single preset. Spectrum: PSD ∝ f^−α, then a 200 Hz shelf, an 8 kHz shelf and a presence band; amplitude modulation and slow drift on top.'],
+sigSweep: ['Лог-свип 20 Гц – 20 кГц', 'Log sweep 20 Hz – 20 kHz'],
+sigSteps: ['Ступенчатые синусы по третьоктавам', 'Third-octave stepped sines'],
+sigTone: ['Опорный тон 1 кГц', 'Reference tone 1 kHz'],
+sigPinkband: ['Полосовой розовый 500 Гц – 2 кГц', 'Band pink 500 Hz – 2 kHz'],
+sigPolarity: ['Тест полярности', 'Polarity test'],
+sigChannels: ['Идентификация каналов L / R / оба', 'Channel identification L / R / both'],
+sigPhase: ['Фазовый тест: синфаза и противофаза', 'Phase test: in-phase and out-of-phase'],
+sigIsp: ['Межвыборочный выброс', 'Inter-sample overshoot'],
+sigSur51: ['Surround 5.1 · независимый шум', 'Surround 5.1 · independent noise'],
+sigSur71: ['Surround 7.1 · независимый шум', 'Surround 7.1 · independent noise'],
+sigSurId: ['Surround 7.1 · обход каналов', 'Surround 7.1 · channel walk'],
+noteSweep: ['Логарифмический свип с фейдами по 20 мс', 'Logarithmic sweep with 20 ms fades'],
+noteSteps: ['Третьоктавные ступени от 25 Гц до 20 кГц, каждая со своими микрофейдами', 'Third-octave steps from 25 Hz to 20 kHz, each with its own micro-fades'],
+noteTone: ['Опорный тон 1 кГц', 'Reference tone at 1 kHz'],
+notePinkband: ['Розовый шум в полосе 500 Гц – 2 кГц, нормирован по пиковому уровню. Пригоден для настройки речевого тракта', 'Pink noise in a 500 Hz – 2 kHz band, peak-normalised. Useful for speech-path alignment'],
+notePolarity: ['Пачки только положительных полуволн 200 Гц. На волне видно, что сигнал несимметричен: переворот полярности меняет форму вверх ногами', 'Bursts of positive-only 200 Hz half-cycles. The waveform is visibly asymmetric: flipping polarity turns it upside down'],
+noteChannels: ['Шесть сегментов: L 440 Гц, R 880 Гц, оба, и повтор. Проверка распайки и баланса', 'Six segments: L 440 Hz, R 880 Hz, both, then repeat. Checks wiring and balance'],
+notePhase: ['Чередование синфазы и противофазы каждые 0,9 с. В противофазе звук растекается по сторонам и почти исчезает при сведении в моно', 'Alternates in-phase and out-of-phase every 0.9 s. Out of phase the sound spreads sideways and nearly vanishes when summed to mono'],
+noteIsp: ['Синус на четверти частоты дискретизации со сдвигом 45°: отсчёты −0,1 dBFS, истинный пик около +2,9 dBTP. Уровень здесь не используется', 'A sine at a quarter of the sample rate with a 45° offset: samples at −0.1 dBFS, true peak near +2.9 dBTP. The level control is not used here'],
+noteSur51: ['Шесть независимых каналов: FL, FR, FC, LFE, BL, BR. LFE ограничен 120 Гц. Прослушивание через стерео-сведение, WAV сохраняет все шесть каналов, MP3 делается из сведения', 'Six independent channels: FL, FR, FC, LFE, BL, BR. LFE limited to 120 Hz. Monitoring uses a stereo downmix; the WAV keeps all six channels and MP3 is made from the downmix'],
+noteSur71: ['Восемь независимых каналов: FL, FR, FC, LFE, BL, BR, SL, SR. Каждый со своим seed, поэтому каналы полностью декоррелированы. Прослушивание через стерео-сведение', 'Eight independent channels: FL, FR, FC, LFE, BL, BR, SL, SR. Each with its own seed, so the channels are fully decorrelated. Monitoring uses a stereo downmix'],
+noteSurId: ['Поочерёдный обход восьми каналов 7.1: FL 440, FR 550, FC 660, LFE 90, BL 880, BR 990, SL 1100, SR 1320 Гц. Проверка распайки surround-системы', 'Sequential walk through eight 7.1 channels: FL 440, FR 550, FC 660, LFE 90, BL 880, BR 990, SL 1100, SR 1320 Hz. Checks surround wiring'],
+roomRoom: ['Комната', 'Room'],
+roomHall: ['Зал', 'Hall'],
+roomOpera: ['Опера', 'Opera house'],
+roomCathedral: ['Собор', 'Cathedral'],
+roomParking: ['Парковка', 'Parking garage'],
+roomTunnel: ['Тоннель', 'Tunnel'],
+moodOff: ['Выключено', 'Off'],
+moodJoy: ['Радость', 'Joy'],
+moodUplift: ['Воодушевление', 'Uplift'],
+moodSerenity: ['Умиротворение', 'Serenity'],
+moodTenderness: ['Нежность', 'Tenderness'],
+moodSadness: ['Грусть', 'Sadness'],
+moodLonging: ['Тоска', 'Longing'],
+moodRestless: ['Тревога', 'Restlessness'],
+moodFatigue: ['Усталость', 'Fatigue'],
+moodClarity: ['Ясность', 'Clarity'],
+moodDetached: ['Отстранённость', 'Detachment'],
+mdJoy: ['Открытый верх, лёгкая пульсация, широкая сцена', 'Open top end, light pulsation, wide stage'],
+mdUplift: ['Ещё светлее и подвижнее, с подъёмом в присутствии', 'Brighter and more mobile, with a presence lift'],
+mdSerenity: ['Тёплый низ, прикрытый верх, очень медленное дыхание', 'Warm lows, softened top, very slow breathing'],
+mdTenderness: ['Мягко и близко, почти без верха, узкая тихая сцена', 'Soft and close, almost no top, a narrow quiet stage'],
+mdSadness: ['Плотный тёплый низ, который держит, а не давит', 'A dense warm low end that holds rather than presses'],
+mdLonging: ['Глубокий ровный фон с далёким пространством', 'A deep even bed with a distant space'],
+mdRestless: ['Заземляющий низкий шум без резких краёв и без движения', 'A grounding low noise with no sharp edges and no movement'],
+mdFatigue: ['Тихо, темно и неподвижно, чтобы ничего не требовало внимания', 'Quiet, dark and still, so nothing demands attention'],
+mdClarity: ['Ровная середина без лишнего верха, ничего не отвлекает', 'An even midrange without extra top, nothing distracting'],
+mdDetached: ['Нейтральный фон, слегка отдалённый, без выраженной окраски', 'A neutral bed, slightly distant, without pronounced colour'],
+taskOff: ['Выключено', 'Off'],
+taskSleep: ['Сон', 'Sleep'],
+taskFocus: ['Концентрация', 'Focus'],
+taskResearch: ['Исследование', 'Research'],
+taskMeditation: ['Медитация', 'Meditation'],
+taskRest: ['Отдых', 'Rest'],
+taskReading: ['Чтение', 'Reading'],
+taskWork: ['Работа', 'Work'],
+taskBreathing: ['Дыхание', 'Breathing'],
+taskMasking: ['Маскировка', 'Masking'],
+taskCreativity: ['Творчество', 'Creativity'],
+tkSleep: ['Очень тихо и темно, минимум движения, уровень −24', 'Very quiet and dark, minimal movement, level −24'],
+tkFocus: ['Ровный masker в середине, без пульсации и дрейфа', 'An even midrange masker with no pulsation or drift'],
+tkResearch: ['Нейтральный опорный сигнал для измерений, без окраски', 'A neutral reference for measurements, no colouration'],
+tkMeditation: ['Медленное дыхание и лёгкое пространство', 'Slow breathing and a light space'],
+tkRest: ['Тихий тёплый фон с медленным дрейфом', 'A quiet warm bed with slow drift'],
+tkReading: ['Приглушённый верх, чтобы не мешать внутреннему голосу', 'A muted top so it does not fight the inner voice'],
+tkWork: ['Нейтральный рабочий фон, слегка живой', 'A neutral working bed, slightly alive'],
+tkBreathing: ['Пульсация 0,1 Гц — шесть вдохов в минуту', 'Pulsation at 0.1 Hz — six breaths per minute'],
+tkMasking: ['Плотная середина и присутствие, чтобы закрыть речь', 'A dense midrange and presence to cover speech'],
+tkCreativity: ['Подвижная текстура с пространством и лёгким дрейфом', 'A mobile texture with space and gentle drift']
+};
+
+const MOODS = [
+{ id: 'off', k: 'moodOff' },
+{ id: 'joy', k: 'moodJoy', d: 'mdJoy', p: { a: 0.75, warm: 1, air: 2, focus: 1400, fq: 0.9, fg: 2.5, mod: 0.10, rate: 0.22, drift: 0.35, width: 1.15, level: -14, wet: 0.14, room: 0.35, norm: 'rms' } },
+{ id: 'uplift', k: 'moodUplift', d: 'mdUplift', p: { a: 0.55, warm: 0, air: 4, focus: 2200, fq: 1.0, fg: 3, mod: 0.14, rate: 0.32, drift: 0.45, width: 1.25, level: -12, wet: 0.18, room: 0.45, norm: 'rms' } },
+{ id: 'serenity', k: 'moodSerenity', d: 'mdSerenity', p: { a: 1.5, warm: 4, air: -9, focus: 420, fq: 0.8, fg: 1.5, mod: 0.05, rate: 0.07, drift: 0.3, width: 1.0, level: -18, wet: 0.2, room: 0.4, norm: 'lufs' } },
+{ id: 'tenderness', k: 'moodTenderness', d: 'mdTenderness', p: { a: 1.7, warm: 5, air: -11, focus: 320, fq: 0.8, fg: 1.2, mod: 0.04, rate: 0.06, drift: 0.25, width: 0.95, level: -20, wet: 0.16, room: 0.3, norm: 'lufs' } },
+{ id: 'sadness', k: 'moodSadness', d: 'mdSadness', p: { a: 1.9, warm: 4, air: -13, focus: 260, fq: 0.7, fg: 1.0, mod: 0.03, rate: 0.05, drift: 0.2, width: 0.75, level: -20, wet: 0.22, room: 0.45, norm: 'lufs' } },
+{ id: 'longing', k: 'moodLonging', d: 'mdLonging', p: { a: 2.0, warm: 3, air: -14, focus: 220, fq: 0.7, fg: 1.0, mod: 0.05, rate: 0.04, drift: 0.3, width: 0.7, level: -21, wet: 0.3, room: 0.6, norm: 'lufs' } },
+{ id: 'restless', k: 'moodRestless', d: 'mdRestless', p: { a: 2.1, warm: 6, air: -17, focus: 160, fq: 0.7, fg: 1.5, mod: 0.02, rate: 0.04, drift: 0.12, width: 0.55, level: -19, wet: 0.1, room: 0.2, norm: 'lufs' } },
+{ id: 'fatigue', k: 'moodFatigue', d: 'mdFatigue', p: { a: 1.85, warm: 4, air: -13, focus: 240, fq: 0.7, fg: 1.0, mod: 0.02, rate: 0.05, drift: 0.15, width: 0.8, level: -21, wet: 0.14, room: 0.3, norm: 'lufs' } },
+{ id: 'clarity', k: 'moodClarity', d: 'mdClarity', p: { a: 1.0, warm: -1, air: -3, focus: 900, fq: 1.0, fg: 1.5, mod: 0.0, rate: 0.1, drift: 0.08, width: 0.9, level: -16, wet: 0.06, room: 0.15, norm: 'rms' } },
+{ id: 'detached', k: 'moodDetached', d: 'mdDetached', p: { a: 1.45, warm: 2, air: -7, focus: 500, fq: 0.8, fg: 0.8, mod: 0.03, rate: 0.06, drift: 0.35, width: 0.85, level: -19, wet: 0.28, room: 0.55, norm: 'lufs' } }
+];
+const TASKS = [
+{ id: 'off', k: 'taskOff' },
+{ id: 'sleep', k: 'taskSleep', d: 'tkSleep', p: { a: 2.05, warm: 5, air: -17, focus: 180, fq: 0.7, fg: 1.0, mod: 0.02, rate: 0.03, drift: 0.15, width: 0.7, level: -24, wet: 0.12, room: 0.3, norm: 'lufs' } },
+{ id: 'focus', k: 'taskFocus', d: 'tkFocus', p: { a: 1.0, warm: -1, air: -6, focus: 900, fq: 1.0, fg: 1.5, mod: 0.0, rate: 0.1, drift: 0.05, width: 0.85, level: -18, wet: 0.04, room: 0.1, norm: 'rms' } },
+{ id: 'research', k: 'taskResearch', d: 'tkResearch', p: { a: 1.0, warm: 0, air: 0, focus: 1000, fq: 1.0, fg: 0, mod: 0.0, rate: 0.1, drift: 0.0, width: 1.0, level: -12, wet: 0, room: 0, norm: 'truepeak' } },
+{ id: 'meditation', k: 'taskMeditation', d: 'tkMeditation', p: { a: 1.6, warm: 4, air: -10, focus: 380, fq: 0.8, fg: 1.2, mod: 0.06, rate: 0.07, drift: 0.4, width: 1.1, level: -20, wet: 0.26, room: 0.6, norm: 'lufs' } },
+{ id: 'rest', k: 'taskRest', d: 'tkRest', p: { a: 1.7, warm: 4, air: -12, focus: 300, fq: 0.8, fg: 1.0, mod: 0.04, rate: 0.06, drift: 0.3, width: 0.95, level: -20, wet: 0.16, room: 0.35, norm: 'lufs' } },
+{ id: 'reading', k: 'taskReading', d: 'tkReading', p: { a: 1.2, warm: 1, air: -8, focus: 700, fq: 0.9, fg: 1.0, mod: 0.01, rate: 0.08, drift: 0.1, width: 0.8, level: -19, wet: 0.06, room: 0.15, norm: 'rms' } },
+{ id: 'work', k: 'taskWork', d: 'tkWork', p: { a: 0.9, warm: 0, air: -4, focus: 1000, fq: 1.0, fg: 1.2, mod: 0.02, rate: 0.12, drift: 0.12, width: 0.9, level: -17, wet: 0.05, room: 0.12, norm: 'rms' } },
+{ id: 'breathing', k: 'taskBreathing', d: 'tkBreathing', p: { a: 1.5, warm: 3, air: -9, focus: 350, fq: 0.8, fg: 1.0, mod: 0.24, rate: 0.1, drift: 0.1, width: 1.0, level: -18, wet: 0.18, room: 0.4, norm: 'lufs' } },
+{ id: 'masking', k: 'taskMasking', d: 'tkMasking', p: { a: 0.8, warm: 0, air: -2, focus: 1500, fq: 0.9, fg: 2.0, mod: 0.0, rate: 0.1, drift: 0.05, width: 1.0, level: -14, wet: 0.03, room: 0.1, norm: 'rms' } },
+{ id: 'creativity', k: 'taskCreativity', d: 'tkCreativity', p: { a: 1.1, warm: 1, air: -3, focus: 1200, fq: 0.9, fg: 1.5, mod: 0.08, rate: 0.18, drift: 0.5, width: 1.15, level: -17, wet: 0.2, room: 0.5, norm: 'rms' } }
+];
+const PKEYS = ['a', 'warm', 'air', 'focus', 'fq', 'fg', 'mod', 'rate', 'drift', 'width', 'level', 'wet', 'room'];
+const ROOMS = [['room', 'roomRoom'], ['hall', 'roomHall'], ['opera', 'roomOpera'], ['cathedral', 'roomCathedral'], ['parking', 'roomParking'], ['tunnel', 'roomTunnel']];
+const ROOM_MOOD = ['room', 'hall', 'opera', 'cathedral'];
+
 const TYPES = ['white', 'pink', 'brown', 'blue', 'violet', 'green', 'grey'];
-const LABELS = { white: 'Белый', pink: 'Розовый', brown: 'Коричневый', blue: 'Синий', violet: 'Фиолетовый', green: 'Зелёный', grey: 'Серый' };
+const TYPE_KEYS = { white: ['Белый', 'White'], pink: ['Розовый', 'Pink'], brown: ['Коричневый', 'Brown'], blue: ['Синий', 'Blue'], violet: ['Фиолетовый', 'Violet'], green: ['Зелёный', 'Green'], grey: ['Серый', 'Grey'] };
 const COLORS = { white: '#e8e2da', pink: '#dba9a3', brown: '#8f6b47', blue: '#7d8fa8', violet: '#9b7fa8', green: '#88a383', grey: '#8a8278' };
 const THIRD = [25, 31.5, 40, 50, 63, 80, 100, 125, 160, 200, 250, 315, 400, 500, 630, 800, 1000, 1250, 1600, 2000, 2500, 3150, 4000, 5000, 6300, 8000, 10000, 12500, 16000, 20000];
 const SIZE_LIMIT = 340 * 1024 * 1024;
-const STORE = 'wnl.v10';
+const STORE = 'wnl.v11';
 const MP3_RATES = [8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000];
 const NORM_DEF = { peak: -1, truepeak: -1, rms: -20, lufs: -16, none: -1 };
 const NORM_UNIT = { peak: 'dBFS', truepeak: 'dBTP', rms: 'dBFS', lufs: 'LUFS', none: '—' };
 const NORM_NOTE = {
-peak: 'Выравнивает самый громкий отсчёт. Межвыборочные выбросы не учитываются',
-truepeak: 'Истинный пик по четырёхкратной передискретизации: учитывает выбросы между отсчётами, которые клипуют ЦАП',
-rms: 'Выравнивает среднюю мощность активного участка — все виды шума звучат одинаково громко',
-lufs: 'Интегральная громкость: взвешивание по слуху, блоки 400 мс, отсечение тихих участков',
-none: 'Уровень не меняется. Клиппинг, если он появится, будет показан в отчёте'
+peak: ['Выравнивает самый громкий отсчёт. Межвыборочные выбросы не учитываются', 'Aligns the loudest sample. Inter-sample overshoots are not considered'],
+truepeak: ['Истинный пик по четырёхкратной передискретизации: учитывает выбросы между отсчётами, которые клипуют ЦАП', 'True peak via 4× oversampling: accounts for overshoots between samples that clip a DAC'],
+rms: ['Выравнивает среднюю мощность активного участка — все виды шума звучат одинаково громко', 'Aligns mean power of the active region — every noise kind sounds equally loud'],
+lufs: ['Интегральная громкость: взвешивание по слуху, блоки 400 мс, отсечение тихих участков', 'Integrated loudness: hearing-weighted, 400 ms blocks, quiet passages gated out'],
+none: ['Уровень не меняется. Клиппинг, если он появится, будет показан в отчёте', 'Level is unchanged. Any clipping will be shown in the report']
 };
-const SIG_NOTE = {
-sweep: 'Логарифмический свип с фейдами по 20 мс',
-steps: 'Третьоктавные ступени от 25 Гц до 20 кГц, каждая со своими микрофейдами',
-tone: 'Опорный тон 1 кГц',
-pinkband: 'Розовый шум в полосе 500 Гц – 2 кГц, нормирован по пиковому уровню. Пригоден для настройки речевого тракта',
-polarity: 'Пачки только положительных полуволн 200 Гц. На волне видно, что сигнал несимметричен: переворот полярности меняет форму вверх ногами',
-channels: 'Шесть сегментов: L 440 Гц, R 880 Гц, оба, и повтор. Проверка распайки и баланса',
-phase: 'Чередование синфазы и противофазы каждые 0,9 с. В противофазе звук растекается по сторонам и почти исчезает при сведении в моно',
-isp: 'Синус на четверти частоты дискретизации со сдвигом 45°: отсчёты −0,1 dBFS, истинный пик около +2,9 dBTP. Уровень здесь не используется',
-sur51: 'Шесть независимых каналов: FL, FR, FC, LFE, BL, BR. LFE ограничен 120 Гц. Порядок и маска каналов прописаны в WAV, MP3 для такого файла недоступен',
-sur71: 'Восемь независимых каналов: FL, FR, FC, LFE, BL, BR, SL, SR. Каждый со своим seed, поэтому каналы полностью декоррелированы',
-surid: 'Поочерёдный обход восьми каналов 7.1: FL 440, FR 550, FC 660, LFE 90, BL 880, BR 990, SL 1100, SR 1320 Гц. Проверка распайки surround-системы'
-};
-const OWN_NOTE = {
-asis: 'Исходная запись без изменений, доступны только огибающая, уровень и пространство',
-match: 'Замеряется усреднённый спектр записи и синтезируется стационарный шум с той же АЧХ. Тембр помещения остаётся, события исчезают',
-granular: 'Запись режется на зёрна и собирается заново со случайными сдвигами и скоростью. Фактура остаётся живой, но перестаёт повторяться'
+const SIG_KEYS = { sweep: 'sigSweep', steps: 'sigSteps', tone: 'sigTone', pinkband: 'sigPinkband', polarity: 'sigPolarity', channels: 'sigChannels', phase: 'sigPhase', isp: 'sigIsp', sur51: 'sigSur51', sur71: 'sigSur71', surid: 'sigSurId' };
+const SIG_NOTES = { sweep: 'noteSweep', steps: 'noteSteps', tone: 'noteTone', pinkband: 'notePinkband', polarity: 'notePolarity', channels: 'noteChannels', phase: 'notePhase', isp: 'noteIsp', sur51: 'noteSur51', sur71: 'noteSur71', surid: 'noteSurId' };
+const OWN_NOTES = {
+asis: ['Исходная запись без изменений, доступны только огибающая, уровень и пространство', 'The original recording unchanged; only fades, level and space are available'],
+match: ['Замеряется усреднённый спектр записи и синтезируется стационарный шум с той же АЧХ. Тембр помещения остаётся, события исчезают', 'The averaged spectrum of the recording is measured and stationary noise with the same response is synthesised. Room timbre stays, events disappear'],
+granular: ['Запись режется на зёрна и собирается заново со случайными сдвигами и скоростью. Фактура остаётся живой, но перестаёт повторяться', 'The recording is cut into grains and reassembled with random offsets and rates. The texture stays alive but stops repeating']
 };
 
 const state = {
+lang: 'ru',
 mode: 'generate', type: 'pink', mixType: 'pink', testType: 'pink', liveType: 'pink',
 tilt: 0, duration: 60, sampleRate: 44100, bitDepth: 24, dither: true, channels: 2, dist: 'uniform',
 norm: 'truepeak', target: -1, exact: false,
 fadeIn: 0, fadeOut: 0, padStart: 0, padEnd: 0, loop: false,
 reverb: false, reverbPreset: 'hall', reverbWet: 30,
 liveReverb: false, liveReverbPreset: 'hall', liveReverbWet: 30,
+mood: 'off', task: 'off',
 seed: 12345, seedAuto: true, snr: -20, keepLevel: true, mixFile: null,
 labTool: 'notch', notchFreq: 1000, notchQ: 8, binBase: 200, binBeat: 6, rot8dSpeed: 4,
 notchTimer: 0, binTimer: 0,
@@ -1173,11 +1712,22 @@ fftSize: 8192, window: 'hann', freqScale: 'log', specTop: -20, specRange: 80,
 volume: 80, view: 'wave', dlBits: 24, mp3Rate: 192,
 busy: false, cancelled: false, analysis: null, master: null, gain: 1, meta: null,
 duration_s: 0, sr: 44100, ch: 2, key: 'noise', bits: 24, wav: null, url: null,
+mp3Master: null, mp3Ch: 2, mp3Gain: 1,
 seeking: false, tooBig: false, fftPending: false
 };
 const curveData = new Float32Array(400);
 curveData.fill(0.5);
-const SAVE_KEYS = ['mode','type','mixType','testType','liveType','tilt','duration','sampleRate','bitDepth','dither','channels','dist','norm','target','exact','fadeIn','fadeOut','padStart','padEnd','loop','reverb','reverbPreset','reverbWet','liveReverb','liveReverbPreset','liveReverbWet','seed','seedAuto','snr','keepLevel','labTool','notchFreq','notchQ','binBase','binBeat','rot8dSpeed','notchTimer','binTimer','liveTilt','liveDrift','liveLevel','curveDur','curveTaps','signalKind','signalDur','signalLevel','signalChan','calibDur','calibBand','calibChan','synthType','synthDur','synthAlpha','synthDrift','percType','ownMode','ownDur','ownGrain','ownTaps','ownFadeIn','ownFadeOut','ownPadA','ownPadB','ownTilt','ownNorm','ownTarget','ownReverb','ownPreset','ownWet','ownLoop','fftSize','window','freqScale','specTop','specRange','volume','view','dlBits','mp3Rate'];
+const SAVE_KEYS = ['lang','mode','type','mixType','testType','liveType','tilt','duration','sampleRate','bitDepth','dither','channels','dist','norm','target','exact','fadeIn','fadeOut','padStart','padEnd','loop','reverb','reverbPreset','reverbWet','liveReverb','liveReverbPreset','liveReverbWet','mood','task','seed','seedAuto','snr','keepLevel','labTool','notchFreq','notchQ','binBase','binBeat','rot8dSpeed','notchTimer','binTimer','liveTilt','liveDrift','liveLevel','curveDur','curveTaps','signalKind','signalDur','signalLevel','signalChan','calibDur','calibBand','calibChan','synthType','synthDur','synthAlpha','synthDrift','percType','ownMode','ownDur','ownGrain','ownTaps','ownFadeIn','ownFadeOut','ownPadA','ownPadB','ownTilt','ownNorm','ownTarget','ownReverb','ownPreset','ownWet','ownLoop','fftSize','window','freqScale','specTop','specRange','volume','view','dlBits','mp3Rate'];
+
+function t(k) { const e = STR[k]; return e ? e[state.lang === 'en' ? 1 : 0] : k; }
+function tf(k) {
+let s = t(k);
+for (let i = 1; i < arguments.length; i++) s = s.split('{' + (i - 1) + '}').join(arguments[i]);
+return s;
+}
+function typeLabel(id) { const e = TYPE_KEYS[id]; return e ? e[state.lang === 'en' ? 1 : 0] : id; }
+function roomLabel(id) { const r = ROOMS.find(function (x) { return x[0] === id; }); return r ? t(r[1]) : id; }
+function dec(v, d) { const s = v.toFixed(d); return state.lang === 'en' ? s : s.replace('.', ','); }
 
 function load() {
 try {
@@ -1190,6 +1740,9 @@ if (TYPES.indexOf(state.type) < 0) state.type = 'pink';
 if (TYPES.indexOf(state.mixType) < 0) state.mixType = 'pink';
 if (TYPES.indexOf(state.testType) < 0) state.testType = 'pink';
 if (TYPES.indexOf(state.liveType) < 0) state.liveType = 'pink';
+if (!MOODS.some(function (m) { return m.id === state.mood; })) state.mood = 'off';
+if (!TASKS.some(function (m) { return m.id === state.task; })) state.task = 'off';
+if (state.lang !== 'en') state.lang = 'ru';
 } catch (e) {}
 }
 load();
@@ -1201,11 +1754,12 @@ let spectroImg = null, spectroDirty = true, curveLastIdx = -1, curveLastVal = 0.
 let ltasRows = [], artUrl = null;
 let workletReady = false, workletTried = false;
 let mp3Lib = null, mp3Promise = null;
+let dbPromise = null, saveTimer = 0, restoring = false;
 const loopCache = new Map();
 const live = { on: false, node: null, src: null, lfo: null, lfoGain: null, gain: null, an: null, data: null, raf: 0, watch: 0, kind: 'none' };
 const knobs = {};
 const waveView = { a: 0, b: 1, sa: -1, sb: -1 };
-const own = { arrays: null, sr: 44100, ch: 1, name: '', rec: false, stream: null, node: null, sp: null, sink: null, chunks: null, frames: 0, timer: 0, t0: 0, meterT: 0, workletTried: false, workletOk: false };
+const own = { arrays: null, sr: 44100, ch: 1, name: '', rec: false, stream: null, node: null, sp: null, sink: null, srcNode: null, chunks: null, frames: 0, timer: 0, t0: 0, meterT: 0, workletTried: false, workletOk: false };
 
 const tick = (function () {
 if (typeof MessageChannel === 'function') {
@@ -1224,26 +1778,87 @@ o.curve = Array.from(curveData);
 localStorage.setItem(STORE, JSON.stringify(o));
 } catch (e) {}
 }
+function idb() {
+if (!dbPromise) dbPromise = new Promise(function (res, rej) {
+if (!window.indexedDB) { rej(new Error('noidb')); return; }
+let rq;
+try { rq = indexedDB.open('wnl-session', 1); } catch (e) { rej(e); return; }
+rq.onupgradeneeded = function () { const d = rq.result; if (!d.objectStoreNames.contains('kv')) d.createObjectStore('kv'); };
+rq.onsuccess = function () { res(rq.result); };
+rq.onerror = function () { rej(rq.error || new Error('idb')); };
+rq.onblocked = function () { rej(new Error('blocked')); };
+});
+return dbPromise;
+}
+async function idbSet(k, v) {
+try {
+const d = await idb();
+return await new Promise(function (res, rej) {
+const tx = d.transaction('kv', 'readwrite');
+tx.objectStore('kv').put(v, k);
+tx.oncomplete = function () { res(true); };
+tx.onerror = function () { rej(tx.error); };
+tx.onabort = function () { rej(tx.error || new Error('abort')); };
+});
+} catch (e) { return false; }
+}
+async function idbGet(k) {
+try {
+const d = await idb();
+return await new Promise(function (res, rej) {
+const tx = d.transaction('kv', 'readonly');
+const rq = tx.objectStore('kv').get(k);
+rq.onsuccess = function () { res(rq.result); };
+rq.onerror = function () { rej(rq.error); };
+});
+} catch (e) { return null; }
+}
+async function idbDel(k) { try { const d = await idb(); d.transaction('kv', 'readwrite').objectStore('kv').delete(k); } catch (e) {} }
+function scheduleSessionSave() {
+if (restoring) return;
+if (saveTimer) clearTimeout(saveTimer);
+saveTimer = setTimeout(async function () {
+saveTimer = 0;
+if (!state.analysis || !state.master) return;
+const ok = await idbSet('result', {
+r: state.analysis, key: state.key, meta: state.meta, bits: state.bits,
+mp3Master: state.mp3Master, mp3Ch: state.mp3Ch, mp3Gain: state.mp3Gain
+});
+if (!ok) pHint(t('sessionSaveFail'));
+}, 600);
+}
+async function saveOwnSession() {
+if (!own.arrays) { await idbDel('own'); return; }
+const n = own.arrays[0].length, ch = own.arrays.length;
+const inter = new Float32Array(n * ch);
+for (let i = 0; i < n; i++) for (let c = 0; c < ch; c++) inter[i * ch + c] = own.arrays[c][i];
+await idbSet('own', { blob: new Blob([inter.buffer], { type: 'application/octet-stream' }), sr: own.sr, ch: ch, name: own.name, frames: n });
+}
+
 function fmtTime(s) { s = Math.max(0, Math.floor(s || 0)); const m = Math.floor(s / 60); return m + ':' + (s % 60 < 10 ? '0' : '') + (s % 60); }
-function fmtTimeMs(s) { if (!isFinite(s)) return '—'; const t = Math.max(0, s); const m = Math.floor(t / 60); const sec = t - m * 60; return m + ':' + (sec < 10 ? '0' : '') + sec.toFixed(2).replace('.', ','); }
-function fmtSize(b) { if (b < 1024) return b + ' Б'; if (b < 1048576) return (b / 1024).toFixed(1).replace('.', ',') + ' КБ'; return (b / 1048576).toFixed(1).replace('.', ',') + ' МБ'; }
-function db(v, d) { if (!isFinite(v)) return '—'; return (v >= 0 ? '+' : '−') + Math.abs(v).toFixed(d === undefined ? 1 : d).replace('.', ','); }
-function num(v, d) { if (!isFinite(v)) return '—'; return v.toFixed(d).replace('.', ','); }
+function fmtTimeMs(s) { if (!isFinite(s)) return '—'; const v = Math.max(0, s); const m = Math.floor(v / 60); const sec = v - m * 60; return m + ':' + (sec < 10 ? '0' : '') + dec(sec, 2); }
+function fmtSize(b) { if (b < 1024) return b + ' ' + t('sizeB'); if (b < 1048576) return dec(b / 1024, 1) + ' ' + t('sizeKB'); return dec(b / 1048576, 1) + ' ' + t('sizeMB'); }
+function db(v, d) { if (!isFinite(v)) return '—'; return (v >= 0 ? '+' : '−') + dec(Math.abs(v), d === undefined ? 1 : d); }
+function num(v, d) { if (!isFinite(v)) return '—'; return dec(v, d); }
 function stamp() { const d = new Date(), p = function (v) { return (v < 10 ? '0' : '') + v; }; return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + '_' + p(d.getHours()) + '-' + p(d.getMinutes()); }
 function friendly(e) {
 const m = e && e.message ? e.message : String(e || '');
-if (m === 'cancelled') return 'Отменено';
-if (/allocat|memory|Array buffer/i.test(m)) return 'Не хватило памяти. Уменьшите длительность, частоту или битрейт';
-return m || 'Неизвестная ошибка';
+if (m === 'cancelled') return t('cancelled');
+if (/allocat|memory|Array buffer/i.test(m)) return t('memError');
+return m || t('unknownError');
 }
 function gainDb() { return 20 * Math.log10(Math.max(state.gain, 1e-12)); }
+function progressLabel(s) {
+if (typeof s === 'string' && s.indexOf('quant:') === 0) return t('quantPrefix') + ' ' + s.slice(6) + ' ' + (state.lang === 'en' ? 'bit' : 'бит');
+return STR[s] ? t(s) : s;
+}
 
 const dock = $('progressDock'), sq = $('progressSquare');
 function applyP() { sq.style.setProperty('--x', (railW * progressP).toFixed(1) + 'px'); sq.style.setProperty('--drift', railW.toFixed(1) + 'px'); dock.style.setProperty('--p', progressP.toFixed(4)); }
 function measureRail() { railW = Math.max(0, $('progressTrack').clientWidth - 14); applyP(); }
-function pSet(p, label) { if (progressTimer) { clearTimeout(progressTimer); progressTimer = null; } dock.dataset.state = 'work'; progressP = clamp(p, 0, 1); applyP(); $('progressLabel').textContent = label; $('progressPercent').textContent = Math.round(progressP * 100) + '%'; }
-function pBusy(label) { if (progressTimer) { clearTimeout(progressTimer); progressTimer = null; } dock.dataset.state = 'busy'; $('progressLabel').textContent = label; $('progressPercent').textContent = ''; }
-function pIdle() { dock.dataset.state = 'idle'; progressP = 0; applyP(); $('progressLabel').textContent = 'Готов к работе'; $('progressPercent').textContent = '0%'; progressTimer = null; }
+function pSet(p, label) { if (progressTimer) { clearTimeout(progressTimer); progressTimer = null; } dock.dataset.state = 'work'; progressP = clamp(p, 0, 1); applyP(); $('progressLabel').textContent = progressLabel(label); $('progressPercent').textContent = Math.round(progressP * 100) + '%'; }
+function pBusy(label) { if (progressTimer) { clearTimeout(progressTimer); progressTimer = null; } dock.dataset.state = 'busy'; $('progressLabel').textContent = progressLabel(label); $('progressPercent').textContent = ''; }
+function pIdle() { dock.dataset.state = 'idle'; progressP = 0; applyP(); $('progressLabel').textContent = t('ready'); $('progressPercent').textContent = '0%'; progressTimer = null; }
 function pHint(msg) { if (progressTimer) clearTimeout(progressTimer); dock.dataset.state = 'idle'; progressP = 0; applyP(); $('progressLabel').textContent = msg; $('progressPercent').textContent = ''; progressTimer = setTimeout(pIdle, 8000); }
 function pDone(l) { if (progressTimer) clearTimeout(progressTimer); dock.dataset.state = 'done'; progressP = 1; applyP(); $('progressLabel').textContent = l; $('progressPercent').textContent = '100%'; progressTimer = setTimeout(pIdle, 2400); }
 function pFail(m) { if (progressTimer) clearTimeout(progressTimer); dock.dataset.state = 'error'; $('progressLabel').textContent = m; $('progressPercent').textContent = ''; progressTimer = setTimeout(pIdle, 9000); }
@@ -1309,7 +1924,7 @@ for (let i = 0; i < urls.length; i++) {
 try { await loadScript(urls[i]); if (window.lamejs && window.lamejs.Mp3Encoder) { mp3Lib = window.lamejs; return mp3Lib; } } catch (e) {}
 }
 mp3Promise = null;
-throw new Error('MP3 пока недоступен: положите файл mp3-encoder.js рядом с index.html или включите интернет. WAV работает всегда');
+throw new Error(t('mp3Unavailable'));
 })();
 }
 return mp3Promise;
@@ -1321,7 +1936,7 @@ if (typeof s.arrayBuffer === 'function') return s.arrayBuffer();
 return new Promise(function (res, rej) { const fr = new FileReader(); fr.onload = function () { res(fr.result); }; fr.onerror = function () { rej(new Error('read')); }; fr.readAsArrayBuffer(s); });
 }
 async function encodeMp3(master, sr, ch, kbps, gain, hooks) {
-if (ch > 2) throw new Error('MP3 поддерживает только моно и стерео. Сохраните такой результат в WAV');
+if (ch > 2) throw new Error(t('mp3StereoOnly'));
 const lib = await ensureMp3();
 const outSr = MP3_RATES.indexOf(sr) >= 0 ? sr : 48000;
 const ratio = outSr / sr;
@@ -1341,12 +1956,12 @@ const src = new Float32Array(ab);
 const frames = Math.floor(src.length / ch);
 for (let k = 0; k < m; k++) {
 const p = (out + k) / ratio - i0;
-const a = Math.floor(p), t = p - a;
+const a = Math.floor(p), f = p - a;
 const a0 = Math.min(a, frames - 1), a1 = Math.min(a + 1, frames - 1);
-const v0 = src[a0 * ch] + (src[a1 * ch] - src[a0 * ch]) * t;
+const v0 = src[a0 * ch] + (src[a1 * ch] - src[a0 * ch]) * f;
 L[k] = toInt16(v0 * gain);
 if (ch > 1) {
-const v1 = src[a0 * ch + 1] + (src[a1 * ch + 1] - src[a0 * ch + 1]) * t;
+const v1 = src[a0 * ch + 1] + (src[a1 * ch + 1] - src[a0 * ch + 1]) * f;
 R[k] = toInt16(v1 * gain);
 }
 }
@@ -1354,7 +1969,7 @@ const d = ch > 1 ? enc.encodeBuffer(L.subarray(0, m), R.subarray(0, m)) : enc.en
 if (d.length) parts.push(new Int8Array(d));
 out += m;
 if (Date.now() - t0 > 30) {
-hooks.progress(0.1 + 0.88 * out / totalOut, 'Кодирование MP3');
+hooks.progress(0.1 + 0.88 * out / totalOut, 'encodingMp3');
 await hooks.tick();
 if (hooks.cancelled()) throw new Error('cancelled');
 t0 = Date.now();
@@ -1396,20 +2011,20 @@ return { c: c, w: w, h: h };
 const HEAT = [[0, 16, 14, 12], [0.22, 58, 34, 22], [0.45, 140, 74, 32], [0.68, 193, 154, 107], [0.86, 232, 200, 140], [1, 250, 240, 220]];
 function heat(v, o) {
 v = clamp(v, 0, 1);
-for (let i = 1; i < HEAT.length; i++) if (v <= HEAT[i][0]) { const a = HEAT[i - 1], b = HEAT[i], t = (v - a[0]) / (b[0] - a[0]); o[0] = a[1] + (b[1] - a[1]) * t; o[1] = a[2] + (b[2] - a[2]) * t; o[2] = a[3] + (b[3] - a[3]) * t; return; }
+for (let i = 1; i < HEAT.length; i++) if (v <= HEAT[i][0]) { const a = HEAT[i - 1], b = HEAT[i], f = (v - a[0]) / (b[0] - a[0]); o[0] = a[1] + (b[1] - a[1]) * f; o[1] = a[2] + (b[2] - a[2]) * f; o[2] = a[3] + (b[3] - a[3]) * f; return; }
 o[0] = 250; o[1] = 240; o[2] = 220;
 }
 const PAD = { l: 48, r: 14, t: 12, b: 24 };
 function fMin() { return 20; }
 function fMax() { return Math.min(20000, state.sr * 0.5); }
 function freqNorm(f) { return state.freqScale === 'lin' ? clamp((f - fMin()) / (fMax() - fMin()), 0, 1) : clamp(Math.log(f / fMin()) / Math.log(fMax() / fMin()), 0, 1); }
-function normFreq(t) { return state.freqScale === 'lin' ? fMin() + (fMax() - fMin()) * t : fMin() * Math.pow(fMax() / fMin(), t); }
+function normFreq(v) { return state.freqScale === 'lin' ? fMin() + (fMax() - fMin()) * v : fMin() * Math.pow(fMax() / fMin(), v); }
+function hzLabel(f) { return f >= 1000 ? num(f / 1000, f >= 10000 ? 0 : 2) + (state.lang === 'en' ? ' kHz' : ' кГц') : num(f, 0) + ' ' + t('hz'); }
 function waveInfoUpdate() {
 const el = $('waveInfo');
-if (!state.analysis) { el.textContent = 'Нет результата'; return; }
+if (!state.analysis) { el.textContent = t('noResult'); return; }
 const d = state.duration_s;
-const span = (waveView.b - waveView.a) * d;
-let t = 'Окно ' + fmtTimeMs(waveView.a * d) + ' – ' + fmtTimeMs(waveView.b * d) + ' · ' + num(span, 2) + ' с';
+let s = tf('waveWindow', fmtTimeMs(waveView.a * d), fmtTimeMs(waveView.b * d), num((waveView.b - waveView.a) * d, 2));
 if (waveView.sa >= 0 && waveView.sb > waveView.sa) {
 const a = state.analysis, B = a.peaks.min.length;
 let pk = 0;
@@ -1419,9 +2034,9 @@ const lo = Math.abs(a.peaks.min[i]), hi = Math.abs(a.peaks.max[i]);
 if (lo > pk) pk = lo;
 if (hi > pk) pk = hi;
 }
-t += ' · выделение ' + num((waveView.sb - waveView.sa) * d, 2) + ' с · пик ' + db(20 * Math.log10(Math.max(pk * state.gain, 1e-12)), 1) + ' dBFS';
+s += tf('waveSelection', num((waveView.sb - waveView.sa) * d, 2), db(20 * Math.log10(Math.max(pk * state.gain, 1e-12)), 1));
 }
-el.textContent = t;
+el.textContent = s;
 }
 function drawWave() {
 const a = state.analysis;
@@ -1459,9 +2074,9 @@ c.stroke();
 c.strokeStyle = 'rgba(192,112,95,.4)'; c.setLineDash([4, 4]); c.beginPath();
 c.moveTo(0, h * 0.04); c.lineTo(w, h * 0.04); c.moveTo(0, h * 0.96); c.lineTo(w, h * 0.96); c.stroke(); c.setLineDash([]);
 if (audioEl.duration > 0) {
-const t = clamp(audioEl.currentTime / audioEl.duration, 0, 1);
-if (t >= va && t <= vb) {
-const x = (t - va) / span * w;
+const p = clamp(audioEl.currentTime / audioEl.duration, 0, 1);
+if (p >= va && p <= vb) {
+const x = (p - va) / span * w;
 c.strokeStyle = '#e8c88c'; c.lineWidth = 1.5; c.beginPath(); c.moveTo(x, 0); c.lineTo(x, h); c.stroke();
 c.fillStyle = '#e8c88c'; c.beginPath(); c.moveTo(x - 4, 0); c.lineTo(x + 4, 0); c.lineTo(x, 6); c.fill();
 }
@@ -1506,11 +2121,11 @@ c.font = '10px system-ui,sans-serif'; c.textAlign = 'right'; c.textBaseline = 'm
 if (fq < fMin() || fq > fMax()) return;
 const y = PAD.t + ph * (1 - freqNorm(fq));
 c.strokeStyle = 'rgba(20,18,16,.42)'; c.beginPath(); c.moveTo(PAD.l, y + .5); c.lineTo(PAD.l + pw, y + .5); c.stroke();
-c.fillStyle = 'rgba(168,155,140,.85)'; c.fillText(fq >= 1000 ? (fq / 1000) + 'к' : String(fq), PAD.l - 6, y);
+c.fillStyle = 'rgba(168,155,140,.85)'; c.fillText(fq >= 1000 ? (fq / 1000) + 'k' : String(fq), PAD.l - 6, y);
 });
 c.textAlign = 'center'; c.textBaseline = 'top'; c.fillStyle = 'rgba(168,155,140,.85)';
 for (let i = 0; i <= 4; i++) c.fillText(fmtTime(state.duration_s * i / 4), clamp(PAD.l + pw * i / 4, PAD.l + 14, PAD.l + pw - 14), PAD.t + ph + 6);
-c.textAlign = 'left'; c.fillStyle = 'rgba(107,97,86,.9)'; c.fillText('Гц', 6, PAD.t - 2);
+c.textAlign = 'left'; c.fillStyle = 'rgba(107,97,86,.9)'; c.fillText(t('hz'), 6, PAD.t - 2);
 }
 function drawSpectro() {
 const a = state.analysis;
@@ -1565,7 +2180,7 @@ c.textAlign = 'center'; c.textBaseline = 'top';
 if (fq < fMin() || fq > fMax()) return;
 const x = xOf(fq);
 c.strokeStyle = 'rgba(46,40,35,.6)'; c.beginPath(); c.moveTo(x + .5, PAD.t); c.lineTo(x + .5, PAD.t + ph); c.stroke();
-c.fillStyle = 'rgba(168,155,140,.8)'; c.fillText(fq >= 1000 ? (fq / 1000) + 'к' : String(fq), x, PAD.t + ph + 6);
+c.fillStyle = 'rgba(168,155,140,.8)'; c.fillText(fq >= 1000 ? (fq / 1000) + 'k' : String(fq), x, PAD.t + ph + 6);
 });
 let refD = -Infinity;
 for (let k = 1; k < half; k++) { const fq = k * sr / N; if (fq >= 900 && fq <= 1100) { const d = 10 * Math.log10(Math.max(a.avg[k], 1e-20)) + lg; if (d > refD) refD = d; } }
@@ -1587,16 +2202,17 @@ if (x === 0) c.moveTo(PAD.l + x, y); else c.lineTo(PAD.l + x, y);
 c.stroke();
 c.strokeStyle = 'rgba(61,53,46,.9)'; c.lineWidth = 1; c.strokeRect(PAD.l + .5, PAD.t + .5, pw - 1, ph - 1);
 c.textAlign = 'left'; c.textBaseline = 'top';
+const su = t('slopeUnit');
 let ly = PAD.t + 4;
-[['0 дБ/окт', '#6b6156'], ['−3 дБ/окт', '#88a383'], ['−6 дБ/окт', '#8f6b47'], ['+3 дБ/окт', '#7d8fa8'], ['+6 дБ/окт', '#9b7fa8']].forEach(function (s) {
+[['0 ' + su, '#6b6156'], ['−3 ' + su, '#88a383'], ['−6 ' + su, '#8f6b47'], ['+3 ' + su, '#7d8fa8'], ['+6 ' + su, '#9b7fa8']].forEach(function (s) {
 c.fillStyle = s[1]; c.fillRect(PAD.l + 8, ly + 4, 12, 2); c.fillStyle = 'rgba(168,155,140,.9)'; c.fillText(s[0], PAD.l + 25, ly); ly += 13;
 });
 c.textAlign = 'right'; c.fillStyle = 'rgba(168,155,140,.95)';
-c.fillText('наклон ' + db(slopeFit(), 2) + ' дБ/окт', w - PAD.r - 4, PAD.t + 3);
-c.fillText('dBFS на полосу', w - PAD.r - 4, PAD.t + 16);
+c.fillText(t('chipSlope') + ' ' + db(slopeFit(), 2) + ' ' + su, w - PAD.r - 4, PAD.t + 3);
+c.fillText(t('perBand'), w - PAD.r - 4, PAD.t + 16);
 c.textAlign = 'left'; c.fillStyle = 'rgba(107,97,86,.9)'; c.fillText('dBFS', 6, PAD.t - 2);
-c.textAlign = 'center'; c.fillText('Гц', PAD.l + pw / 2, PAD.t + ph + 15); c.textAlign = 'left';
-$('welchSummary').textContent = 'Усреднение по ' + a.cols + ' окнам · окно ' + a.fftSize + ' · наклон ' + db(slopeFit(), 2) + ' дБ/окт';
+c.textAlign = 'center'; c.fillText(t('hz'), PAD.l + pw / 2, PAD.t + ph + 15); c.textAlign = 'left';
+$('welchSummary').textContent = tf('welchSummary', a.cols, a.fftSize, db(slopeFit(), 2));
 }
 function drawHist() {
 const a = state.analysis;
@@ -1622,10 +2238,10 @@ c.stroke();
 c.strokeStyle = 'rgba(61,53,46,.9)'; c.lineWidth = 1; c.strokeRect(pl + .5, pt + .5, pw - 1, ph - 1);
 c.font = '10px system-ui,sans-serif'; c.fillStyle = 'rgba(168,155,140,.85)'; c.textAlign = 'center'; c.textBaseline = 'top';
 [-1, -0.5, 0, 0.5, 1].forEach(function (v) { c.fillText(num(v * g, 2), pl + pw * (v + 1) / 2, pt + ph + 6); });
-c.textAlign = 'left'; c.fillText('амплитуда после нормализации · логарифмическая частота', pl + 4, pt + 2);
-c.fillStyle = 'rgba(125,143,168,.9)'; c.fillText('гауссова огибающая', pl + 4, pt + 15);
+c.textAlign = 'left'; c.fillText(t('histAxis'), pl + 4, pt + 2);
+c.fillStyle = 'rgba(125,143,168,.9)'; c.fillText(t('histGauss'), pl + 4, pt + 15);
 c.fillStyle = 'rgba(168,155,140,.9)';
-c.fillText('эксцесс ' + num(a.kurt, 2) + ' · асимметрия ' + num(a.skew, 2) + ' · крест-фактор ' + db(20 * Math.log10(Math.max(a.peak, 1e-12) / Math.max(a.rms, 1e-12)), 1) + ' дБ', pl + 4, pt + 28);
+c.fillText(tf('histStats', num(a.kurt, 2), num(a.skew, 2), db(20 * Math.log10(Math.max(a.peak, 1e-12) / Math.max(a.rms, 1e-12)), 1)), pl + 4, pt + 28);
 }
 function drawLoud() {
 const a = state.analysis;
@@ -1666,8 +2282,8 @@ c.textAlign = 'center'; c.textBaseline = 'top'; c.fillStyle = 'rgba(168,155,140,
 for (let i = 0; i <= 4; i++) c.fillText(fmtTime(state.duration_s * i / 4), clamp(pl + pw * i / 4, pl + 14, pl + pw - 14), pt + ph + 6);
 c.textAlign = 'left';
 let ly = pt + 3;
-[['M 400 мс', '#c19a6b'], ['S 3 с', '#7d8fa8'], ['Истинный пик', '#b4622a'], ['I интегральная', '#86a06d']].forEach(function (s) { c.fillStyle = s[1]; c.fillRect(pl + 8, ly + 4, 12, 2); c.fillStyle = 'rgba(168,155,140,.9)'; c.fillText(s[0], pl + 25, ly); ly += 13; });
-if (state.ch > 2) { c.fillStyle = 'rgba(201,162,39,.9)'; c.textAlign = 'right'; c.fillText('многоканальная сумма без взвешивания', w - 14, pt + 3); c.textAlign = 'left'; }
+[[t('loudLegendM'), '#c19a6b'], [t('loudLegendS'), '#7d8fa8'], [t('loudLegendTp'), '#b4622a'], [t('loudLegendI'), '#86a06d']].forEach(function (s) { c.fillStyle = s[1]; c.fillRect(pl + 8, ly + 4, 12, 2); c.fillStyle = 'rgba(168,155,140,.9)'; c.fillText(s[0], pl + 25, ly); ly += 13; });
+if (state.ch > 2) { c.fillStyle = 'rgba(201,162,39,.9)'; c.textAlign = 'right'; c.fillText(t('loudUnweighted'), w - 14, pt + 3); c.textAlign = 'left'; }
 }
 function buildLtas() {
 const a = state.analysis;
@@ -1684,7 +2300,7 @@ for (let k = k0; k < k1; k++) p += a.avg[k];
 total += p;
 ltasRows.push({ fc: fc, lo: lo, hi: hi, db: 10 * Math.log10(Math.max(p, 1e-20)) + lg, bins: k1 - k0 });
 });
-$('ltasSummary').textContent = 'Сумма полос ' + db(10 * Math.log10(Math.max(total, 1e-20)) + lg, 1) + ' dBFS RMS · полос ' + ltasRows.length;
+$('ltasSummary').textContent = tf('ltasSummary', db(10 * Math.log10(Math.max(total, 1e-20)) + lg, 1), ltasRows.length);
 }
 function drawLtas() {
 const a = state.analysis;
@@ -1693,7 +2309,7 @@ showVisual('ltas');
 buildLtas();
 let mx = -Infinity;
 ltasRows.forEach(function (r) { if (r.db > mx) mx = r.db; });
-const html = ['<table class="ltas-table"><thead><tr><th>Полоса, Гц</th><th>Границы</th><th>Уровень, dBFS</th><th>Отн., дБ</th><th style="width:34%">Профиль</th></tr></thead><tbody>'];
+const html = ['<table class="ltas-table"><thead><tr><th>' + t('ltasHeadBand') + '</th><th>' + t('ltasHeadEdges') + '</th><th>' + t('ltasHeadLevel') + '</th><th>' + t('ltasHeadRel') + '</th><th style="width:34%">' + t('ltasHeadProfile') + '</th></tr></thead><tbody>'];
 ltasRows.forEach(function (r) {
 const rel = r.db - mx;
 html.push('<tr><td>' + (r.fc >= 1000 ? (r.fc / 1000) + 'k' : r.fc) + '</td><td>' + Math.round(r.lo) + '–' + Math.round(r.hi) + '</td><td>' + db(r.db, 1) + '</td><td>' + db(rel, 1) + '</td><td><div class="ltas-bar" style="width:' + (clamp((rel + 60) / 60, 0.01, 1) * 100).toFixed(1) + '%"></div></td></tr>');
@@ -1718,7 +2334,7 @@ c.textAlign = 'center'; c.textBaseline = 'top';
 if (fq > fm) return;
 const x = pl + pw * Math.log(fq / 20) / Math.log(fm / 20);
 c.strokeStyle = 'rgba(193,154,107,.1)'; c.beginPath(); c.moveTo(x + .5, pt); c.lineTo(x + .5, pt + ph); c.stroke();
-c.fillStyle = 'rgba(168,155,140,.8)'; c.fillText(fq >= 1000 ? (fq / 1000) + 'к' : String(fq), x, pt + ph + 5);
+c.fillStyle = 'rgba(168,155,140,.8)'; c.fillText(fq >= 1000 ? (fq / 1000) + 'k' : String(fq), x, pt + ph + 5);
 });
 c.strokeStyle = '#c19a6b'; c.lineWidth = 2; c.beginPath();
 for (let x = 0; x < pw; x++) {
@@ -1727,8 +2343,8 @@ const y = pt + ph * (1 - curveData[i]);
 if (x === 0) c.moveTo(pl + x, y); else c.lineTo(pl + x, y);
 }
 c.stroke();
-c.fillStyle = 'rgba(107,97,86,.9)'; c.textAlign = 'left'; c.fillText('дБ', 6, pt - 2);
-c.textAlign = 'right'; c.fillText('Гц', w - 6, pt + ph + 5); c.textAlign = 'left';
+c.fillStyle = 'rgba(107,97,86,.9)'; c.textAlign = 'left'; c.fillText(t('db'), 6, pt - 2);
+c.textAlign = 'right'; c.fillText(t('hz'), w - 6, pt + ph + 5); c.textAlign = 'left';
 }
 function curveMode() { return state.mode === 'lab' && state.labTool === 'curve'; }
 function renderView() {
@@ -1760,21 +2376,21 @@ const pk = 20 * Math.log10(Math.max(a.peak * state.gain, 1e-12));
 const tp = 20 * Math.log10(Math.max(a.truePeak * state.gain, 1e-12));
 const rms = 20 * Math.log10(Math.max(a.rms * state.gain, 1e-12));
 const ch = [];
-ch.push('<span class="chip"><span>Пик</span><b>' + db(pk) + ' dBFS</b></span>');
-ch.push('<span class="chip' + (tp > 0 ? ' bad' : (tp > -0.5 ? ' warn' : ' ok')) + '"><span>Истинный пик</span><b>' + db(tp) + ' dBTP</b></span>');
-ch.push('<span class="chip"><span>RMS акт.</span><b>' + db(rms) + ' dBFS</b></span>');
+ch.push('<span class="chip"><span>' + t('chipPeak') + '</span><b>' + db(pk) + ' dBFS</b></span>');
+ch.push('<span class="chip' + (tp > 0 ? ' bad' : (tp > -0.5 ? ' warn' : ' ok')) + '"><span>' + t('chipTruePeak') + '</span><b>' + db(tp) + ' dBTP</b></span>');
+ch.push('<span class="chip"><span>' + t('chipRms') + '</span><b>' + db(rms) + ' dBFS</b></span>');
 if (isFinite(a.I)) ch.push('<span class="chip"><span>I</span><b>' + db(a.I + lg) + ' LUFS</b></span>');
 if (isFinite(a.LRA)) ch.push('<span class="chip"><span>LRA</span><b>' + num(a.LRA, 1) + ' LU</b></span>');
-ch.push('<span class="chip"><span>Крест</span><b>' + num(pk - rms, 1) + ' дБ</b></span>');
-ch.push('<span class="chip' + (Math.abs(a.dc) > 0.001 ? ' warn' : '') + '"><span>DC</span><b>' + (a.dc < 0 ? '−' : '+') + Math.abs(a.dc * state.gain).toFixed(5).replace('.', ',') + '</b></span>');
-if (isFinite(a.corr)) ch.push('<span class="chip' + (a.corr > 0.999 ? ' warn' : '') + '"><span>Корр. L/R</span><b>' + num(a.corr, 3) + '</b></span>');
-ch.push('<span class="chip"><span>Эксцесс</span><b>' + num(a.kurt, 2) + '</b></span>');
+ch.push('<span class="chip"><span>' + t('chipCrest') + '</span><b>' + num(pk - rms, 1) + ' ' + t('db') + '</b></span>');
+ch.push('<span class="chip' + (Math.abs(a.dc) > 0.001 ? ' warn' : '') + '"><span>DC</span><b>' + (a.dc < 0 ? '−' : '+') + dec(Math.abs(a.dc * state.gain), 5) + '</b></span>');
+if (isFinite(a.corr)) ch.push('<span class="chip' + (a.corr > 0.999 ? ' warn' : '') + '"><span>' + t('chipCorr') + '</span><b>' + num(a.corr, 3) + '</b></span>');
+ch.push('<span class="chip"><span>' + t('chipKurt') + '</span><b>' + num(a.kurt, 2) + '</b></span>');
 const sl = slopeFit();
-if (isFinite(sl)) ch.push('<span class="chip"><span>Наклон</span><b>' + db(sl, 2) + ' дБ/окт</b></span>');
-if (state.ch > 2) ch.push('<span class="chip warn"><span>Каналов</span><b>' + state.ch + '</b></span>');
-if (a.clipped > 0) ch.push('<span class="chip bad"><span>Клиппинг</span><b>' + a.clipped + ' отсч.</b></span>');
-else ch.push('<span class="chip ok"><b>Клиппинга нет</b></span>');
-if (a.limited) ch.push('<span class="chip warn"><b>Огранижено по пику</b></span>');
+if (isFinite(sl)) ch.push('<span class="chip"><span>' + t('chipSlope') + '</span><b>' + db(sl, 2) + ' ' + t('slopeUnit') + '</b></span>');
+if (state.ch > 2) ch.push('<span class="chip warn"><span>' + t('chipChannels') + '</span><b>' + state.ch + '</b></span>');
+if (a.clipped > 0) ch.push('<span class="chip bad"><span>' + t('chipClipping') + '</span><b>' + tf('clippingCount', a.clipped) + '</b></span>');
+else ch.push('<span class="chip ok"><b>' + t('clippingNone') + '</b></span>');
+if (a.limited) ch.push('<span class="chip warn"><b>' + t('limitedByPeak') + '</b></span>');
 el.innerHTML = ch.join('');
 el.classList.remove('hidden');
 }
@@ -1806,17 +2422,17 @@ const audioEl = new Audio();
 audioEl.preload = 'auto';
 audioEl.setAttribute('playsinline', '');
 const seekBar = $('seekBar');
-function playIcon(p) { $('playIcon').innerHTML = p ? '<path d="M6 5h4v14H6zM14 5h4v14h-4z"/>' : '<path d="M8 5v14l11-7z"/>'; $('playBtn').setAttribute('aria-label', p ? 'Пауза' : 'Воспроизвести'); }
+function playIcon(p) { $('playIcon').innerHTML = p ? '<path d="M6 5h4v14H6zM14 5h4v14h-4z"/>' : '<path d="M8 5v14l11-7z"/>'; $('playBtn').setAttribute('aria-label', p ? t('pause') : t('play')); }
 function timeText() { $('timeDisplay').textContent = fmtTime(audioEl.currentTime) + ' / ' + fmtTime(audioEl.duration || state.duration_s); }
 audioEl.addEventListener('timeupdate', function () { timeText(); if (!state.seeking && audioEl.duration > 0) seekBar.value = Math.floor(audioEl.currentTime / audioEl.duration * 1000); positionState(); });
 audioEl.addEventListener('loadedmetadata', function () { timeText(); seekBar.disabled = false; });
 audioEl.addEventListener('play', function () { playIcon(true); if (!rafMeters) rafMeters = requestAnimationFrame(meterLoop); mediaMeta(); });
 audioEl.addEventListener('pause', function () { playIcon(false); updateMeters(); positionState(); });
 audioEl.addEventListener('ended', function () { playIcon(false); updateMeters(); });
-audioEl.addEventListener('error', function () { if (state.url) pFail('Браузер не смог воспроизвести файл, но скачать его можно'); });
+audioEl.addEventListener('error', function () { if (state.url) pFail(t('playFail')); });
 function togglePlay() {
 if (!state.url) return;
-if (audioEl.paused) { const p = audioEl.play(); if (p && p.catch) p.catch(function () { pFail('Нажмите ещё раз — браузер блокирует автозапуск'); }); }
+if (audioEl.paused) { const p = audioEl.play(); if (p && p.catch) p.catch(function () { pFail(t('playBlocked')); }); }
 else audioEl.pause();
 }
 function seekBy(d) {
@@ -1855,8 +2471,8 @@ if (!('mediaSession' in navigator)) return;
 try {
 if (!artUrl) artUrl = artwork();
 navigator.mediaSession.metadata = new MediaMetadata({
-title: 'White Noise Lab', artist: live.on ? 'Живой шум · ' + LABELS[state.liveType] : state.key,
-album: live.on ? 'бесконечно' : fmtTime(state.duration_s) + ' · ' + state.sr + ' Гц',
+title: 'White Noise Lab', artist: live.on ? t('toolLive') + ' · ' + typeLabel(state.liveType) : state.key,
+album: live.on ? '∞' : fmtTime(state.duration_s) + ' · ' + state.sr + ' Hz',
 artwork: artUrl ? [{ src: artUrl, sizes: '512x512', type: 'image/png' }] : []
 });
 navigator.mediaSession.playbackState = (audioEl.paused && !live.on) ? 'paused' : 'playing';
@@ -1877,23 +2493,35 @@ if (!('mediaSession' in navigator)) return;
 ['previoustrack', function () { seekBy(-30); }], ['nexttrack', function () { seekBy(30); }]].forEach(function (p) { try { navigator.mediaSession.setActionHandler(p[0], p[1]); } catch (e) {} });
 }
 
-function applyResult(r, key, meta) {
+function stageMetaText() {
+if (!state.meta) return '— · —';
+let label = state.meta.label || '';
+if (state.analysis && state.analysis.boostDb) label += tf('boostSuffix', num(state.analysis.boostDb, 0));
+const chTxt = state.ch > 2 ? tf('chCount', state.ch) : (state.ch === 2 ? t('stereo') : t('mono'));
+let s = label + ' · ' + fmtTime(state.duration_s) + ' · ' + state.sr + ' ' + t('hz') + ' · ' + chTxt + ' · ' + state.bits + ' ' + (state.lang === 'en' ? 'bit' : 'бит') + ' · ' + fmtSize(state.wav ? state.wav.size : 0);
+if (state.ch > 2) s += ' · ' + t('surroundPreviewNote');
+return s;
+}
+function applyResult(r, key, meta, restored) {
 audioEl.pause();
 const old = state.url;
 state.analysis = r; state.master = r.master; state.gain = r.gain;
 state.wav = r.wav; state.bits = r.bits; state.duration_s = r.duration; state.sr = r.sr; state.ch = r.ch;
 state.key = key; state.meta = meta; state.fftPending = false;
-state.url = URL.createObjectURL(r.wav);
+state.mp3Master = r.masterStereo || r.master;
+state.mp3Ch = r.masterStereo ? 2 : r.ch;
+state.mp3Gain = r.previewGain || r.gain;
+const playBlob = r.preview || r.wav;
+state.url = URL.createObjectURL(playBlob);
 audioEl.src = state.url; audioEl.loop = state.loop; audioEl.volume = state.volume / 100;
 if (old) URL.revokeObjectURL(old);
 spectroDirty = true; spectroImg = null;
 waveView.a = 0; waveView.b = 1; waveView.sa = -1; waveView.sb = -1;
 $('dlBitDepth').value = String(r.bits); state.dlBits = r.bits;
 seekBar.disabled = false; seekBar.value = 0;
-let label = meta.label;
-if (r.boostDb) label += ' · +' + num(r.boostDb, 0) + ' дБ';
-$('stageMeta').textContent = label + ' · ' + fmtTime(r.duration) + ' · ' + r.sr + ' Гц · ' + (r.ch > 2 ? r.ch + ' кан.' : (r.ch === 2 ? 'стерео' : 'моно')) + ' · ' + r.bits + ' бит · ' + fmtSize(r.wav.size);
+$('stageMeta').textContent = stageMetaText();
 timeText(); renderChips(); buildLtas(); updateMeters(); syncView(); refresh(); mediaMeta();
+if (!restored) scheduleSessionSave();
 }
 function refresh() {
 const b = state.busy;
@@ -1903,11 +2531,11 @@ $('mixBtn').disabled = b || !state.mixFile;
 $('ownGen').disabled = b || !own.arrays;
 $('ownRec').disabled = b;
 $('ownWav').disabled = b || !state.wav;
-$('ownMp3').disabled = b || !state.master || state.ch > 2;
+$('ownMp3').disabled = b || !state.mp3Master;
 $('reanalyzeBtn').disabled = b || !state.master;
 $('reanalyzeBtn').classList.toggle('pending', state.fftPending && !b);
 $('dlWavBtn').disabled = b || !state.wav;
-$('dlMp3Btn').disabled = b || !state.master || state.ch > 2;
+$('dlMp3Btn').disabled = b || !state.mp3Master;
 $('playBtn').disabled = !state.url;
 ['cancelBtn', 'cancelBtnMix', 'cancelBtnCurve', 'cancelBtnSignal', 'cancelBtnCalib', 'cancelBtnSynth', 'ownCancel'].forEach(function (id) { const e = $(id); if (e) e.classList.toggle('hidden', !b); });
 $('viewToggle').querySelectorAll('.view-btn').forEach(function (btn) { btn.disabled = btn.dataset.view === 'curve' ? false : !state.analysis; });
@@ -1915,6 +2543,7 @@ $('waveZoomIn').disabled = !state.analysis;
 $('waveZoomOut').disabled = !state.analysis;
 $('waveFit').disabled = !state.analysis;
 $('waveSelClear').disabled = !state.analysis;
+$('clearSession').disabled = b;
 }
 async function job(btn, label, fn) {
 if (state.busy) return;
@@ -1925,9 +2554,9 @@ refresh(); pBusy(label);
 try {
 await tick();
 await fn({ progress: pSet, tick: tick, cancelled: function () { return state.cancelled; } });
-pDone('Готово');
+pDone(t('done'));
 } catch (e) {
-if (e && e.message === 'cancelled') pFail('Отменено пользователем');
+if (e && e.message === 'cancelled') pFail(t('cancelledByUser'));
 else { console.error(e); pFail(friendly(e)); }
 } finally {
 if (btn) btn.innerHTML = html;
@@ -1936,30 +2565,36 @@ state.busy = false; state.cancelled = false; refresh(); save();
 }
 function swatches(id, active, cb) {
 const el = $(id); el.innerHTML = '';
-TYPES.forEach(function (t) {
+TYPES.forEach(function (tp) {
 const b = document.createElement('button');
-b.type = 'button'; b.className = 'swatch' + (t === active ? ' active' : '');
-b.setAttribute('role', 'radio'); b.setAttribute('aria-checked', t === active ? 'true' : 'false');
-b.innerHTML = '<span class="swatch-dot" style="background:' + COLORS[t] + '"></span><span class="swatch-name">' + LABELS[t] + '</span>';
+b.type = 'button'; b.className = 'swatch' + (tp === active ? ' active' : '');
+b.setAttribute('role', 'radio'); b.setAttribute('aria-checked', tp === active ? 'true' : 'false');
+b.innerHTML = '<span class="swatch-dot" style="background:' + COLORS[tp] + '"></span><span class="swatch-name">' + typeLabel(tp) + '</span>';
 b.addEventListener('click', function () {
 el.querySelectorAll('.swatch').forEach(function (x) { x.classList.remove('active'); x.setAttribute('aria-checked', 'false'); });
-b.classList.add('active'); b.setAttribute('aria-checked', 'true'); cb(t); save();
+b.classList.add('active'); b.setAttribute('aria-checked', 'true'); cb(tp); save();
 });
 el.appendChild(b);
 });
 }
+function rebuildSwatches() {
+swatches('swatches', state.type, function (v) { state.type = v; refresh(); });
+swatches('mixSwatches', state.mixType, function (v) { state.mixType = v; });
+swatches('testSwatches', state.testType, function (v) { state.testType = v; if (labSession && labSession.kind === 'test') labSession.switchTo(v); });
+swatches('liveSwatches', state.liveType, function (v) { state.liveType = v; if (live.on) liveRebuild(); });
+}
 function segment(id, attr, cb) {
 $(id).addEventListener('click', function (e) {
-const b = e.target.closest('.seg'); if (!b) return;
+const b = e.target.closest('.seg'); if (!b || b.disabled) return;
 $(id).querySelectorAll('.seg').forEach(function (x) { x.classList.remove('active'); x.setAttribute('aria-checked', 'false'); });
 b.classList.add('active'); b.setAttribute('aria-checked', 'true');
 cb(b.dataset[attr]); save();
 });
 }
-function slider(sid, nid, key, min, max, dec, cb) {
+function slider(sid, nid, key, min, max, decimal, cb) {
 const s = $(sid), n = $(nid);
 if (!s || !n) return;
-const round = function (v) { return dec ? Math.round(v * 100) / 100 : Math.round(v); };
+const round = function (v) { return decimal ? Math.round(v * 100) / 100 : Math.round(v); };
 function commit(v) { v = clamp(round(isNaN(v) ? min : v), min, max); state[key] = v; s.value = v; n.value = v; if (cb) cb(v); save(); }
 s.addEventListener('input', function () { const v = clamp(round(parseFloat(s.value)), min, max); state[key] = v; n.value = v; if (cb) cb(v); save(); });
 n.addEventListener('input', function () { const v = parseFloat(n.value); if (isNaN(v) || v < min || v > max) return; state[key] = round(v); s.value = state[key]; if (cb) cb(state[key]); save(); });
@@ -1978,7 +2613,6 @@ const host = $(id);
 host.className = 'knob';
 host.setAttribute('role', 'slider');
 host.setAttribute('tabindex', '0');
-host.setAttribute('aria-label', opt.label);
 host.setAttribute('aria-valuemin', String(opt.min));
 host.setAttribute('aria-valuemax', String(opt.max));
 host.innerHTML = '<svg viewBox="0 0 88 88" aria-hidden="true">' +
@@ -1988,19 +2622,22 @@ host.innerHTML = '<svg viewBox="0 0 88 88" aria-hidden="true">' +
 '<path class="knob-value" stroke="url(#' + id + '-g)" d=""/>' +
 '<circle class="knob-cap" cx="44" cy="44" r="25"/>' +
 '<line class="knob-pointer" x1="44" y1="44" x2="44" y2="23"/>' +
-'</svg><div class="knob-read"><b></b><span>' + opt.unit + '</span></div>';
+'</svg><div class="knob-read"><b></b><span>' + opt.unit() + '</span></div>';
 const valPath = host.querySelector('.knob-value');
 const pointer = host.querySelector('.knob-pointer');
 const read = host.querySelector('.knob-read b');
+const unitEl = host.querySelector('.knob-read span');
 let value = opt.value;
 function render() {
-const t = clamp((value - opt.min) / (opt.max - opt.min), 0, 1);
-const ang = -135 + 270 * t;
-valPath.setAttribute('d', t <= 0.002 ? '' : arcPath(44, 44, 34, -135, ang));
+const f = clamp((value - opt.min) / (opt.max - opt.min), 0, 1);
+const ang = -135 + 270 * f;
+valPath.setAttribute('d', f <= 0.002 ? '' : arcPath(44, 44, 34, -135, ang));
 pointer.setAttribute('transform', 'rotate(' + ang.toFixed(2) + ' 44 44)');
 read.textContent = opt.format(value);
+unitEl.textContent = opt.unit();
+host.setAttribute('aria-label', opt.label());
 host.setAttribute('aria-valuenow', String(value));
-host.setAttribute('aria-valuetext', opt.format(value) + ' ' + opt.unit);
+host.setAttribute('aria-valuetext', opt.format(value) + ' ' + opt.unit());
 }
 function set(v, fire) {
 v = clamp(Math.round(v / opt.step) * opt.step, opt.min, opt.max);
@@ -2038,16 +2675,16 @@ else if (e.key === 'End') { e.preventDefault(); set(opt.max); }
 else if (e.key === 'PageUp') { e.preventDefault(); set(value + big * 2); }
 else if (e.key === 'PageDown') { e.preventDefault(); set(value - big * 2); }
 });
-return { set: function (v) { set(v, false); } };
+return { set: function (v) { set(v, false); }, refresh: render };
 }
 function estimate() {
-const t = state.duration + (state.loop ? 0 : state.padStart + state.padEnd);
+const total = state.duration + (state.loop ? 0 : state.padStart + state.padEnd);
 const bps = state.bitDepth === 16 ? 2 : (state.bitDepth === 24 ? 3 : 4);
-const size = 44 + Math.round(t * state.sampleRate) * state.channels * bps;
+const size = 44 + Math.round(total * state.sampleRate) * state.channels * bps;
 const el = $('estimate');
 state.tooBig = size > SIZE_LIMIT;
 el.classList.toggle('warn', state.tooBig);
-el.textContent = state.tooBig ? ('Слишком большой файл: ' + fmtSize(size) + '. Уменьшите длительность, частоту или битрейт') : ('WAV ≈ ' + fmtSize(size) + ' · ' + fmtTime(t) + ' · ' + (state.channels === 2 ? 'стерео' : 'моно') + (state.loop ? ' · по кругу' : '') + ' · seed ' + state.seed);
+el.textContent = state.tooBig ? tf('estimateBig', fmtSize(size)) : tf('estimateOk', fmtSize(size), fmtTime(total), state.channels === 2 ? t('stereo') : t('mono'), state.loop ? t('loopSuffix') : '', state.seed);
 refresh();
 }
 function setLoop(on) {
@@ -2063,7 +2700,7 @@ $('normModeSelect').value = state.norm;
 $('normTargetSlider').value = state.target;
 $('normTargetNum').value = state.target;
 $('normTargetUnit').textContent = NORM_UNIT[state.norm];
-$('normNote').textContent = NORM_NOTE[state.norm];
+$('normNote').textContent = NORM_NOTE[state.norm][state.lang === 'en' ? 1 : 0];
 const off = state.norm === 'none';
 $('normTargetSlider').disabled = off; $('normTargetNum').disabled = off;
 }
@@ -2072,7 +2709,17 @@ function syncDitherUI() {
 const on = state.bitDepth === 16;
 $('ditherToggle').disabled = !on;
 $('ditherRow').classList.toggle('dimmed', !on);
-$('ditherSub').textContent = on ? 'Убирает ступеньки квантования на тихих участках и длинных фейдах' : 'Работает только при 16 бит. При 24 и 32 бит квантование настолько мелкое, что дизеринг не нужен';
+$('ditherSub').textContent = on ? t('ditherSubOn') : t('ditherSubOff');
+}
+function fillRoomSelect(id, val) {
+const el = $(id);
+el.innerHTML = '';
+ROOMS.forEach(function (r) {
+const o = document.createElement('option');
+o.value = r[0]; o.textContent = t(r[1]);
+el.appendChild(o);
+});
+el.value = val;
 }
 function syncReverbUI() {
 $('reverbSection').classList.toggle('dimmed', !state.reverb);
@@ -2092,17 +2739,79 @@ function nextSeed() { if (state.seedAuto) { state.seed = (Math.random() * 429496
 function baseSpec() {
 return { sr: state.sampleRate, channels: state.channels, bits: state.bitDepth, dither: state.dither, norm: state.norm, target: state.target, seed: state.seed, fftSize: state.fftSize, window: state.window, exact: state.exact, dist: state.dist, tilt: state.tilt, reverb: state.reverb, reverbPreset: state.reverbPreset, reverbWet: state.reverbWet };
 }
+function computeProfile() {
+const m = MOODS.find(function (x) { return x.id === state.mood; });
+const k = TASKS.find(function (x) { return x.id === state.task; });
+const mp = m && m.p ? m.p : null, kp = k && k.p ? k.p : null;
+if (!mp && !kp) return null;
+if (mp && !kp) return Object.assign({}, mp);
+if (!mp && kp) return Object.assign({}, kp);
+const out = {};
+PKEYS.forEach(function (key) { out[key] = (mp[key] + kp[key]) / 2; });
+out.norm = kp.norm || mp.norm;
+return out;
+}
+function roomFromValue(v) { return ROOM_MOOD[clamp(Math.floor(v * ROOM_MOOD.length), 0, ROOM_MOOD.length - 1)]; }
+function syncMoodUI() {
+const pr = computeProfile();
+const m = MOODS.find(function (x) { return x.id === state.mood; });
+const k = TASKS.find(function (x) { return x.id === state.task; });
+$('moodNote').textContent = m && m.d ? t(m.d) : t('moodOffNote');
+$('taskNote').textContent = k && k.d ? t(k.d) : t('taskOffNote');
+const active = !!pr;
+['typeSection', 'tiltSection', 'distSection', 'exactRow'].forEach(function (id) { $(id).classList.toggle('dimmed', active); });
+$('moodRead').classList.toggle('hidden', !active);
+if (!active) return;
+const rows = [
+[t('profileAlpha'), num(pr.a, 2)],
+[t('profileWarm'), db(pr.warm, 1) + ' ' + t('db')],
+[t('profileAir'), db(pr.air, 1) + ' ' + t('db')],
+[t('profileFocus'), hzLabel(pr.focus)],
+[t('profileMod'), num(pr.mod * 100, 0) + ' %'],
+[t('profileRate'), num(pr.rate, 2) + ' Hz'],
+[t('profileWidth'), num(pr.width, 2)],
+[t('profileLevel'), db(pr.level, 1) + ' ' + NORM_UNIT[pr.norm]],
+[t('profileSpace'), pr.wet > 0.01 ? roomLabel(roomFromValue(pr.room)) + ' ' + num(pr.wet * 100, 0) + '%' : '—'],
+[t('profileNorm'), t(pr.norm === 'lufs' ? 'normLufs' : pr.norm === 'rms' ? 'normRms' : 'normTrue')]
+];
+$('moodGrid').innerHTML = rows.map(function (r) { return '<div><span>' + r[0] + '</span><b>' + r[1] + '</b></div>'; }).join('');
+$('moodFormula').textContent = (m && m.p && k && k.p) ? t('profileFormula') : t('profileFormulaOne');
+}
+function fillMoodSelects() {
+const ms = $('moodSelect'), ts = $('taskSelect');
+ms.innerHTML = ''; ts.innerHTML = '';
+MOODS.forEach(function (m) { const o = document.createElement('option'); o.value = m.id; o.textContent = t(m.k); ms.appendChild(o); });
+TASKS.forEach(function (m) { const o = document.createElement('option'); o.value = m.id; o.textContent = t(m.k); ts.appendChild(o); });
+ms.value = state.mood; ts.value = state.task;
+}
+function fillSignalSelect() {
+const el = $('signalKind');
+el.innerHTML = '';
+Object.keys(SIG_KEYS).forEach(function (k) { const o = document.createElement('option'); o.value = k; o.textContent = t(SIG_KEYS[k]); el.appendChild(o); });
+el.value = state.signalKind;
+}
+function fillTimers() {
+[['notchTimer', state.notchTimer], ['binTimer', state.binTimer]].forEach(function (g) {
+const el = $(g[0]);
+el.innerHTML = '';
+[0, 5, 15, 30, 60].forEach(function (m) {
+const b = document.createElement('button');
+b.type = 'button'; b.className = 'seg' + (m === g[1] ? ' active' : '');
+b.dataset.min = String(m);
+b.setAttribute('role', 'radio');
+b.setAttribute('aria-checked', m === g[1] ? 'true' : 'false');
+b.textContent = m === 0 ? t('timerOff') : tf('timerMin', m);
+el.appendChild(b);
+});
+});
+}
 
-swatches('swatches', state.type, function (t) { state.type = t; refresh(); });
-swatches('mixSwatches', state.mixType, function (t) { state.mixType = t; });
-swatches('testSwatches', state.testType, function (t) { state.testType = t; if (labSession && labSession.kind === 'test') labSession.switchTo(t); });
-swatches('liveSwatches', state.liveType, function (t) { state.liveType = t; if (live.on) liveRebuild(); });
+rebuildSwatches();
+knobs.level = makeKnob('knobLevel', { min: -60, max: 0, step: 0.5, value: state.liveLevel, def: -18, unit: function () { return t('db'); }, label: function () { return t('knobLevel'); }, format: function (v) { return num(v, 1); }, onInput: function (v) { state.liveLevel = v; if (live.on) liveApplyLevel(); save(); } });
+knobs.drift = makeKnob('knobDrift', { min: 0, max: 100, step: 1, value: state.liveDrift, def: 25, unit: function () { return '%'; }, label: function () { return t('knobDrift'); }, format: function (v) { return num(v, 0); }, onInput: function (v) { state.liveDrift = v; if (live.on) liveParams(); save(); } });
+knobs.tilt = makeKnob('knobTilt', { min: -2, max: 2, step: 0.05, value: state.liveTilt, def: 0, unit: function () { return 'α'; }, label: function () { return t('knobTilt'); }, format: function (v) { return num(v, 2); }, onInput: function (v) { state.liveTilt = v; if (live.on) liveRebuild(); save(); } });
 
-knobs.level = makeKnob('knobLevel', { min: -60, max: 0, step: 0.5, value: state.liveLevel, def: -18, unit: 'дБ', label: 'Уровень живого шума', format: function (v) { return num(v, 1); }, onInput: function (v) { state.liveLevel = v; if (live.on) liveApplyLevel(); save(); } });
-knobs.drift = makeKnob('knobDrift', { min: 0, max: 100, step: 1, value: state.liveDrift, def: 25, unit: '%', label: 'Медленный дрейф', format: function (v) { return num(v, 0); }, onInput: function (v) { state.liveDrift = v; if (live.on) liveParams(); save(); } });
-knobs.tilt = makeKnob('knobTilt', { min: -2, max: 2, step: 0.05, value: state.liveTilt, def: 0, unit: 'α', label: 'Дополнительный наклон', format: function (v) { return num(v, 2); }, onInput: function (v) { state.liveTilt = v; if (live.on) liveRebuild(); save(); } });
-
-slider('tiltSlider', 'tiltNum', 'tilt', -2, 2, true, function () { $('tiltNote').textContent = 'Добавляет ' + db(-3.0103 * state.tilt, 2) + ' дБ/окт к выбранному виду шума'; });
+slider('tiltSlider', 'tiltNum', 'tilt', -2, 2, true, function () { $('tiltNote').textContent = (state.lang === 'en' ? 'Adds ' : 'Добавляет ') + db(-3.0103 * state.tilt, 2) + ' ' + t('slopeUnit'); });
 slider('durationSlider', 'durationNum', 'duration', 1, 600, false, estimate);
 slider('normTargetSlider', 'normTargetNum', 'target', -40, 0, true);
 slider('fadeInSlider', 'fadeInNum', 'fadeIn', 0, 30);
@@ -2114,7 +2823,7 @@ slider('liveReverbWet', 'liveReverbWetNum', 'liveReverbWet', 0, 100, false, func
 slider('snrSlider', 'snrNum', 'snr', -40, 20);
 slider('notchFreq', 'notchFreqNum', 'notchFreq', 100, 12000, false, function (v) { if (labSession && labSession.notch) labSession.notch.frequency.setTargetAtTime(v, audioCtx.currentTime, 0.02); });
 slider('notchQ', 'notchQNum', 'notchQ', 1, 50, true, function (v) { if (labSession && labSession.notch) labSession.notch.Q.setTargetAtTime(v, audioCtx.currentTime, 0.02); });
-slider('binBase', 'binBaseNum', 'binBase', 100, 500, false, function (v) { if (labSession && labSession.oscL) { const t = audioCtx.currentTime; labSession.oscL.frequency.setTargetAtTime(v, t, 0.03); labSession.oscR.frequency.setTargetAtTime(v + state.binBeat, t, 0.03); } });
+slider('binBase', 'binBaseNum', 'binBase', 100, 500, false, function (v) { if (labSession && labSession.oscL) { const tm = audioCtx.currentTime; labSession.oscL.frequency.setTargetAtTime(v, tm, 0.03); labSession.oscR.frequency.setTargetAtTime(v + state.binBeat, tm, 0.03); } });
 slider('binBeat', 'binBeatNum', 'binBeat', 1, 20, true, function (v) { if (labSession && labSession.oscR) labSession.oscR.frequency.setTargetAtTime(state.binBase + v, audioCtx.currentTime, 0.03); });
 slider('rot8dSpeed', 'rot8dSpeedNum', 'rot8dSpeed', 1, 20, false, function (v) { if (labSession && labSession.oscX) { const f = v * 0.06; labSession.oscX.frequency.setTargetAtTime(f, audioCtx.currentTime, 0.05); labSession.oscZ.frequency.setTargetAtTime(f, audioCtx.currentTime, 0.05); } });
 slider('curveDur', 'curveDurNum', 'curveDur', 5, 120);
@@ -2149,13 +2858,15 @@ $('curveTaps').addEventListener('change', function () { state.curveTaps = parseI
 $('dlBitDepth').addEventListener('change', function () { state.dlBits = parseInt($('dlBitDepth').value, 10); save(); });
 $('mp3Rate').addEventListener('change', function () { state.mp3Rate = parseInt($('mp3Rate').value, 10); save(); });
 $('signalKind').addEventListener('change', function () { state.signalKind = $('signalKind').value; syncSignalUI(); save(); });
+$('moodSelect').addEventListener('change', function () { state.mood = $('moodSelect').value; syncMoodUI(); save(); });
+$('taskSelect').addEventListener('change', function () { state.task = $('taskSelect').value; syncMoodUI(); save(); });
 $('seedNum').addEventListener('change', function () { state.seed = clamp(parseInt($('seedNum').value, 10) || 1, 1, 4294967295); $('seedNum').value = state.seed; estimate(); save(); });
 $('seedRandom').addEventListener('click', function () { state.seed = (Math.random() * 4294967295 >>> 0) || 1; $('seedNum').value = state.seed; estimate(); save(); });
 $('seedLock').addEventListener('click', function () {
 state.seedAuto = !state.seedAuto;
 $('seedLock').classList.toggle('active', state.seedAuto);
 $('seedLock').setAttribute('aria-pressed', state.seedAuto ? 'true' : 'false');
-$('seedLock').textContent = state.seedAuto ? 'Авто' : 'Фикс';
+$('seedLock').textContent = state.seedAuto ? t('seedAuto') : t('seedFixed');
 save();
 });
 segment('channelSegmented', 'channels', function (v) { state.channels = parseInt(v, 10); estimate(); });
@@ -2171,33 +2882,33 @@ segment('binTimer', 'min', function (v) { state.binTimer = parseInt(v, 10); if (
 
 function syncCurveRange() {
 const fm = Math.min(20000, state.sampleRate * 0.47);
-$('curveRange').textContent = 'Диапазон: 20 Гц – ' + (fm >= 1000 ? num(fm / 1000, 2) + ' кГц' : num(fm, 0) + ' Гц') + ' · определяется частотой дискретизации';
+$('curveRange').textContent = (state.lang === 'en' ? 'Range: 20 Hz – ' : 'Диапазон: 20 Гц – ') + hzLabel(fm);
 }
 function syncSignalUI() {
 const k = state.signalKind;
 const sur = k === 'sur51' || k === 'sur71' || k === 'surid';
-$('signalNote').textContent = SIG_NOTE[k] || '';
+$('signalNote').textContent = t(SIG_NOTES[k] || 'noteSweep');
 $('signalChanSection').classList.toggle('dimmed', sur);
 $('signalChannel').querySelectorAll('.seg').forEach(function (b) { b.disabled = sur; });
 $('signalLevel').disabled = k === 'isp';
 $('signalLevelNum').disabled = k === 'isp';
 }
-function markFftPending() { state.fftPending = true; refresh(); pHint('Параметры анализа изменены — нажмите «Пересчитать»'); }
+function markFftPending() { state.fftPending = true; refresh(); pHint(t('fftChanged')); }
 $('fftSize').addEventListener('change', function () { state.fftSize = parseInt($('fftSize').value, 10); markFftPending(); save(); });
 $('fftWindow').addEventListener('change', function () { state.window = $('fftWindow').value; markFftPending(); save(); });
 $('freqScale').addEventListener('change', function () { state.freqScale = $('freqScale').value; spectroDirty = true; renderView(); save(); });
 $('specTop').addEventListener('input', function () { state.specTop = parseInt($('specTop').value, 10); $('specTopVal').textContent = db(state.specTop, 0); spectroDirty = true; renderView(); save(); });
 $('specRange').addEventListener('input', function () { state.specRange = parseInt($('specRange').value, 10); $('specRangeVal').textContent = state.specRange; spectroDirty = true; renderView(); save(); });
 $('reanalyzeBtn').addEventListener('click', function () {
-if (!state.master) { pFail('Сначала сгенерируйте результат'); return; }
+if (!state.master) { pFail(t('needResult')); return; }
 const spec = { master: state.master, sr: state.sr, ch: state.ch, fftSize: state.fftSize, window: state.window };
-job($('reanalyzeBtn'), 'Пересчёт…', async function (hooks) {
+job($('reanalyzeBtn'), t('recalcJob'), async function (hooks) {
 const s = await runDsp('respec', spec, hooks);
 const a = state.analysis;
 a.spectra = s.spectra; a.avg = s.avg; a.cols = s.cols; a.half = s.half; a.hop = s.hop; a.fftSize = s.fftSize; a.window = s.window;
 state.fftPending = false;
 spectroDirty = true; spectroImg = null;
-renderChips(); buildLtas(); renderView();
+renderChips(); buildLtas(); renderView(); scheduleSessionSave();
 });
 });
 function csvDownload(name, text) {
@@ -2230,33 +2941,57 @@ $('dlWavBtn').addEventListener('click', function () {
 if (!state.wav) return;
 const bits = parseInt($('dlBitDepth').value, 10);
 if (bits === state.bits) { grab(state.wav, 'wav', bits); return; }
-job($('dlWavBtn'), 'Генерация…', async function (hooks) {
+job($('dlWavBtn'), t('generating'), async function (hooks) {
 const r = await runDsp('requant', { master: state.master, sr: state.sr, ch: state.ch, bits: bits, dither: state.dither, gain: state.gain }, hooks);
 grab(r.wav, 'wav', bits);
 });
 });
 $('dlMp3Btn').addEventListener('click', function () {
-if (!state.master) return;
+if (!state.mp3Master) return;
 const kbps = parseInt($('mp3Rate').value, 10);
-job($('dlMp3Btn'), 'Генерация…', async function (hooks) {
-hooks.progress(0.03, 'Подготовка MP3');
-const r = await encodeMp3(state.master, state.sr, state.ch, kbps, state.gain, hooks);
+job($('dlMp3Btn'), t('generating'), async function (hooks) {
+hooks.progress(0.03, 'preparingMp3');
+const r = await encodeMp3(state.mp3Master, state.sr, state.mp3Ch, kbps, state.mp3Gain, hooks);
 grab(r.blob, 'mp3', 16);
 });
+});
+$('clearSession').addEventListener('click', async function () {
+await idbDel('result'); await idbDel('own'); await idbDel('mixFile');
+own.arrays = null; own.name = '';
+$('ownFileName').textContent = t('orLoadFile');
+$('ownInfo').textContent = t('noSource');
+state.mixFile = null;
+$('mixFileName').textContent = t('chooseFile');
+$('mixInfo').textContent = t('noFile');
+refresh();
+pHint(t('sessionCleared'));
 });
 
 $('generateBtn').addEventListener('click', function () {
 nextSeed();
 const spec = baseSpec();
-spec.source = 'gen'; spec.kind = 'noise'; spec.type = state.type;
+const pr = computeProfile();
+spec.source = 'gen';
 spec.bodyFrames = Math.max(1, Math.round(state.duration * spec.sr));
 spec.padA = state.loop ? 0 : Math.round(state.padStart * spec.sr);
 spec.padB = state.loop ? 0 : Math.round(state.padEnd * spec.sr);
 spec.fadeIn = Math.round(state.fadeIn * spec.sr); spec.fadeOut = Math.round(state.fadeOut * spec.sr);
 spec.loop = state.loop;
-job($('generateBtn'), 'Генерация…', async function (hooks) {
+let label;
+if (pr) {
+spec.kind = 'mood'; spec.profile = pr;
+spec.norm = pr.norm; spec.target = pr.level;
+spec.reverb = pr.wet > 0.01; spec.reverbPreset = roomFromValue(pr.room); spec.reverbWet = Math.round(pr.wet * 100);
+const m = MOODS.find(function (x) { return x.id === state.mood; });
+const k = TASKS.find(function (x) { return x.id === state.task; });
+label = [m && m.p ? t(m.k) : null, k && k.p ? t(k.k) : null].filter(Boolean).join(' + ');
+} else {
+spec.kind = 'noise'; spec.type = state.type;
+label = typeLabel(state.type) + (Math.abs(state.tilt) > 0.02 ? ' · α ' + num(state.tilt, 2) : '') + (state.reverb ? t('spaceSuffix') : '');
+}
+job($('generateBtn'), t('generating'), async function (hooks) {
 const r = await runDsp('run', spec, hooks);
-applyResult(r, state.type, { label: LABELS[state.type] + (Math.abs(state.tilt) > 0.02 ? ' · α ' + num(state.tilt, 2) : '') + (state.reverb ? ' · пространство' : '') });
+applyResult(r, pr ? 'mood-' + state.mood + '-' + state.task : state.type, { label: label });
 });
 });
 
@@ -2265,46 +3000,47 @@ const f = $('mixFileInput').files[0]; if (!f) return;
 state.mixFile = f; $('mixFileName').textContent = f.name;
 const i = $('mixInfo');
 i.classList.toggle('warn', f.size > 180 * 1048576);
-i.textContent = f.size > 180 * 1048576 ? ('Файл ' + fmtSize(f.size) + ' — слишком большой') : ('Размер файла: ' + fmtSize(f.size));
+i.textContent = f.size > 180 * 1048576 ? (t('fileLabel') + ' ' + fmtSize(f.size) + ' ' + t('tooBigSuffix')) : tf('fileSize', fmtSize(f.size));
 refresh();
+idbSet('mixFile', f);
 });
 function readBuf(f) {
 if (typeof f.arrayBuffer === 'function') return f.arrayBuffer();
 return new Promise(function (res, rej) { const fr = new FileReader(); fr.onload = function () { res(fr.result); }; fr.onerror = function () { rej(new Error('read')); }; fr.readAsArrayBuffer(f); });
 }
 function ctx() {
-if (!audioCtx) { const A = window.AudioContext || window.webkitAudioContext; if (!A) throw new Error('Браузер не поддерживает звук'); audioCtx = new A(); }
+if (!audioCtx) { const A = window.AudioContext || window.webkitAudioContext; if (!A) throw new Error(t('noAudioSupport')); audioCtx = new A(); }
 return audioCtx;
 }
 async function ensureCtx() { const c = ctx(); if (c.state === 'suspended') { try { await c.resume(); } catch (e) {} } return c; }
 $('mixBtn').addEventListener('click', function () {
 const f = state.mixFile; if (!f) return;
 const type = state.mixType, snr = state.snr, keep = state.keepLevel;
-job($('mixBtn'), 'Генерация…', async function (hooks) {
-if (f.size > 180 * 1048576) throw new Error('Файл больше 180 МБ');
-hooks.progress(0.02, 'Чтение файла'); await tick();
+job($('mixBtn'), t('generating'), async function (hooks) {
+if (f.size > 180 * 1048576) throw new Error(t('fileTooBig'));
+hooks.progress(0.02, 'readingFile'); await tick();
 const ab = await readBuf(f);
-pBusy('Декодирование трека'); await tick();
+pBusy('decodingTrack'); await tick();
 const c = await ensureCtx();
 let dec;
-try { dec = await c.decodeAudioData(ab); } catch (e) { throw new Error('Не удалось прочитать аудио — WAV, MP3, OGG, M4A, FLAC'); }
+try { dec = await c.decodeAudioData(ab); } catch (e) { throw new Error(t('badAudio')); }
 const sr = dec.sampleRate, len = dec.length, ch = Math.min(2, dec.numberOfChannels);
-if (len / sr > 600) throw new Error('Трек длиннее 10 минут');
-if (len * ch * 4 > 340 * 1048576) throw new Error('Трек слишком длинный для частоты ' + sr + ' Гц');
+if (len / sr > 600) throw new Error(t('trackTooLong'));
+if (len * ch * 4 > 340 * 1048576) throw new Error(tf('trackTooBig', sr));
 const arr = [];
 for (let k = 0; k < ch; k++) arr.push(dec.getChannelData(k).slice());
 dec = null;
-hooks.progress(0.08, 'Замер уровня трека');
+hooks.progress(0.08, 'measuringTrack');
 let ts = 0;
 for (let k = 0; k < ch; k++) { const d = arr[k]; for (let i = 0; i < len; i++) ts += d[i] * d[i]; }
 const trackRms = Math.sqrt(ts / (len * ch));
-if (trackRms < 1e-6) throw new Error('Трек пустой или слишком тихий');
+if (trackRms < 1e-6) throw new Error(t('trackSilent'));
 const probeN = Math.min(len, Math.round(sr * 30));
 const pb = new Float32Array(probeN);
 DSP.noiseGen(type, sr, state.seed, { tilt: state.tilt, dist: state.dist })(pb, probeN);
 let ps = 0; for (let i = 0; i < probeN; i++) ps += pb[i] * pb[i];
 const noiseRms = Math.sqrt(ps / probeN);
-if (noiseRms < 1e-9) throw new Error('Не удалось построить шум');
+if (noiseRms < 1e-9) throw new Error(t('noiseFail'));
 const ng = trackRms * Math.pow(10, snr / 20) / noiseRms;
 const gens = [];
 for (let k = 0; k < ch; k++) gens.push(DSP.noiseGen(type, sr, (state.seed + k * 7919) >>> 0, { tilt: state.tilt, dist: state.dist }));
@@ -2314,7 +3050,7 @@ while (pos < len) {
 const n = Math.min(CH, len - pos);
 for (let k = 0; k < ch; k++) { gens[k](nb, n); const d = arr[k]; for (let i = 0; i < n; i++) d[pos + i] += nb[i] * ng; }
 pos += n;
-if (Date.now() - t0 > 40) { hooks.progress(0.1 + 0.2 * pos / len, 'Наложение шума'); await tick(); if (hooks.cancelled()) throw new Error('cancelled'); t0 = Date.now(); }
+if (Date.now() - t0 > 40) { hooks.progress(0.1 + 0.2 * pos / len, 'mixing'); await tick(); if (hooks.cancelled()) throw new Error('cancelled'); t0 = Date.now(); }
 }
 const spec = {
 source: 'arrays', arrays: arr, sr: sr, channels: ch, bits: state.bitDepth, dither: state.dither,
@@ -2322,7 +3058,7 @@ bodyFrames: len, padA: 0, padB: 0, fadeIn: 0, fadeOut: 0, loop: false,
 norm: keep ? 'none' : state.norm, target: state.target, fftSize: state.fftSize, window: state.window, seed: state.seed
 };
 const r = await runDsp('run', spec, hooks);
-applyResult(r, 'mix-' + type, { label: 'Наложение · ' + LABELS[type] + ' · ' + db(snr, 0) + ' дБ' });
+applyResult(r, 'mix-' + type, { label: tf('mixMeta', typeLabel(type), db(snr, 0)) });
 arr.length = 0;
 });
 });
@@ -2339,7 +3075,7 @@ let s = 0; for (let i = 0; i < n + fade; i++) s += tmp[i] * tmp[i];
 const rms = Math.sqrt(s / (n + fade)), g = rms > 1e-9 ? 0.12 / rms : 1;
 const d = b.getChannelData(c);
 for (let i = 0; i < n; i++) d[i] = tmp[i] * g;
-for (let i = 0; i < fade; i++) { const t = i / fade; d[i] = tmp[i] * g * Math.sqrt(t) + tmp[n + i] * g * Math.sqrt(1 - t); }
+for (let i = 0; i < fade; i++) { const f = i / fade; d[i] = tmp[i] * g * Math.sqrt(f) + tmp[n + i] * g * Math.sqrt(1 - f); }
 }
 loopCache.set(type, b);
 return b;
@@ -2354,8 +3090,8 @@ const s = labSession; labSession = null;
 if (s.timerId) clearInterval(s.timerId);
 if (s.endTo) clearTimeout(s.endTo);
 if (s.raf) cancelAnimationFrame(s.raf);
-const t = audioCtx.currentTime;
-try { s.master.gain.cancelScheduledValues(t); s.master.gain.setValueAtTime(s.master.gain.value, t); s.master.gain.linearRampToValueAtTime(0, t + 0.06); } catch (e) {}
+const tm = audioCtx.currentTime;
+try { s.master.gain.cancelScheduledValues(tm); s.master.gain.setValueAtTime(s.master.gain.value, tm); s.master.gain.linearRampToValueAtTime(0, tm + 0.06); } catch (e) {}
 setTimeout(function () { s.src.forEach(function (x) { try { x.stop(); } catch (e) {} try { x.disconnect(); } catch (e) {} }); s.nodes.forEach(function (x) { try { x.disconnect(); } catch (e) {} }); }, 170);
 }
 function baseSess(kind) {
@@ -2369,20 +3105,20 @@ function attachTimer(s, min, el) {
 if (s.timerId) { clearInterval(s.timerId); s.timerId = null; }
 if (s.endTo) { clearTimeout(s.endTo); s.endTo = null; }
 if (!min) { el.classList.add('hidden'); return; }
-const t = audioCtx.currentTime;
-try { s.master.gain.cancelScheduledValues(t); s.master.gain.setValueAtTime(Math.max(0.0001, s.master.gain.value), t); s.master.gain.linearRampToValueAtTime(state.volume / 100, t + 0.3); } catch (e) {}
+const tm = audioCtx.currentTime;
+try { s.master.gain.cancelScheduledValues(tm); s.master.gain.setValueAtTime(Math.max(0.0001, s.master.gain.value), tm); s.master.gain.linearRampToValueAtTime(state.volume / 100, tm + 0.3); } catch (e) {}
 const end = Date.now() + min * 60000;
 el.classList.remove('hidden');
 function step() {
 const left = Math.max(0, end - Date.now());
-el.textContent = 'Осталось ' + fmtTime(left / 1000);
+el.textContent = tf('timerLeft', fmtTime(left / 1000));
 if (left <= 0) {
 if (labSession !== s) return;
 if (s.timerId) { clearInterval(s.timerId); s.timerId = null; }
 const tt = audioCtx.currentTime;
 try { s.master.gain.cancelScheduledValues(tt); s.master.gain.setValueAtTime(s.master.gain.value, tt); s.master.gain.linearRampToValueAtTime(0.0001, tt + 2); } catch (e) {}
-el.textContent = 'Таймер завершён';
-s.endTo = setTimeout(function () { if (labSession === s) { stopLab(); resetLab(); $('stageMeta').textContent = 'Таймер завершён'; } }, 2200);
+el.textContent = t('timerDone');
+s.endTo = setTimeout(function () { if (labSession === s) { stopLab(); resetLab(); $('stageMeta').textContent = t('timerDone'); } }, 2200);
 }
 }
 step(); s.timerId = setInterval(step, 500);
@@ -2397,7 +3133,7 @@ const g = audioCtx.createGain(); g.gain.value = 2.2;
 src.connect(nf); nf.connect(g); g.connect(s.master); src.start();
 s.src.add(src); s.nodes.add(nf); s.nodes.add(g); s.notch = nf;
 labSession = s; attachTimer(s, state.notchTimer, $('notchCountdown')); showStop('notch');
-$('stageMeta').textContent = 'Вырез · ' + state.notchFreq + ' Гц · Q ' + num(state.notchQ, 1);
+$('stageMeta').textContent = tf('notchMeta', state.notchFreq, num(state.notchQ, 1));
 mediaMeta();
 });
 $('notchStop').addEventListener('click', function () { stopLab(); resetLab(); $('stageMeta').textContent = '— · —'; });
@@ -2417,7 +3153,7 @@ s.src.add(bed); s.src.add(oL); s.src.add(oR);
 [bg, pL, pR, og].forEach(function (n) { s.nodes.add(n); });
 s.oscL = oL; s.oscR = oR;
 labSession = s; attachTimer(s, state.binTimer, $('binCountdown')); showStop('bin');
-$('stageMeta').textContent = 'Бинаурал · ' + state.binBase + ' Гц · разница ' + num(state.binBeat, 1) + ' Гц';
+$('stageMeta').textContent = tf('binMeta', state.binBase, num(state.binBeat, 1));
 mediaMeta();
 });
 $('binStop').addEventListener('click', function () { stopLab(); resetLab(); $('stageMeta').textContent = '— · —'; });
@@ -2448,7 +3184,7 @@ const step = function () { if (labSession !== s) return; const now = performance
 s.raf = requestAnimationFrame(step);
 }
 labSession = s; showStop('rot8d');
-$('stageMeta').textContent = '8D · скорость ' + state.rot8dSpeed;
+$('stageMeta').textContent = tf('rotMeta', state.rot8dSpeed);
 mediaMeta();
 });
 $('rot8dStop').addEventListener('click', function () { stopLab(); resetLab(); $('stageMeta').textContent = '— · —'; });
@@ -2456,8 +3192,8 @@ $('testPlay').addEventListener('click', async function () {
 stopLab(); liveStop(); ownAbort(); await ensureCtx();
 const s = baseSess('test');
 let cur = null;
-function play(t) {
-const src = audioCtx.createBufferSource(); src.buffer = loopBuf(t); src.loop = true;
+function play(tp) {
+const src = audioCtx.createBufferSource(); src.buffer = loopBuf(tp); src.loop = true;
 const g = audioCtx.createGain(); g.gain.value = 0;
 src.connect(g); g.connect(s.master); src.start();
 const now = audioCtx.currentTime;
@@ -2471,7 +3207,7 @@ setTimeout(function () { try { o.src.disconnect(); o.g.disconnect(); } catch (e)
 cur = { src: src, g: g };
 }
 play(state.testType); s.switchTo = play; labSession = s; showStop('test');
-$('stageMeta').textContent = 'Тест · ' + LABELS[state.testType];
+$('stageMeta').textContent = tf('testMeta', typeLabel(state.testType));
 mediaMeta();
 });
 $('testStop').addEventListener('click', function () { stopLab(); resetLab(); $('stageMeta').textContent = '— · —'; });
@@ -2521,7 +3257,7 @@ let s = 0; for (let i = 0; i < n + fade; i++) s += tmp[i] * tmp[i];
 const rms = Math.sqrt(s / (n + fade)), g = rms > 1e-9 ? 0.2 / rms : 1;
 const d = b.getChannelData(c);
 for (let i = 0; i < n; i++) d[i] = tmp[i] * g;
-for (let i = 0; i < fade; i++) { const t = i / fade; d[i] = tmp[i] * g * Math.sqrt(t) + tmp[n + i] * g * Math.sqrt(1 - t); }
+for (let i = 0; i < fade; i++) { const f = i / fade; d[i] = tmp[i] * g * Math.sqrt(f) + tmp[n + i] * g * Math.sqrt(1 - f); }
 bufs.push(d);
 }
 if (state.liveReverb) {
@@ -2598,7 +3334,7 @@ if (useWorklet) { try { liveStartWorklet(); } catch (e) { useWorklet = false; } 
 if (!useWorklet) liveStartBuffer();
 liveApplyLevel();
 showStop('live');
-$('stageMeta').textContent = 'Живой шум · ' + LABELS[state.liveType] + ' · ' + db(state.liveLevel, 0) + ' dBFS · бесконечно';
+$('stageMeta').textContent = tf('liveMeta', typeLabel(state.liveType), db(state.liveLevel, 0));
 if (!live.raf) live.raf = requestAnimationFrame(liveMeterLoop);
 mediaMeta();
 if (live.kind === 'worklet') {
@@ -2614,7 +3350,7 @@ try { if (live.gain) live.gain.disconnect(); } catch (x) {}
 try { if (live.an) live.an.disconnect(); } catch (x) {}
 live.gain = null; live.an = null;
 resetLab();
-pFail('Живой шум не запустился: ' + friendly(e));
+pFail(tf('liveFail', friendly(e)));
 }
 }
 function liveStop() {
@@ -2675,9 +3411,9 @@ spec.source = 'gen'; spec.kind = 'curve'; spec.type = 'curve';
 spec.curve = Array.from(curveData); spec.taps = state.curveTaps;
 spec.bodyFrames = Math.round(state.curveDur * spec.sr);
 spec.channels = 1; spec.padA = 0; spec.padB = 0; spec.fadeIn = 0; spec.fadeOut = 0; spec.loop = false;
-job($('curveGen'), 'Генерация…', async function (hooks) {
+job($('curveGen'), t('generating'), async function (hooks) {
 const r = await runDsp('run', spec, hooks);
-applyResult(r, 'curve', { label: 'Кривая · ' + state.curveTaps + ' отводов' });
+applyResult(r, 'curve', { label: tf('curveMeta', state.curveTaps) });
 });
 });
 $('signalGen').addEventListener('click', function () {
@@ -2689,9 +3425,9 @@ spec.channels = kind === 'sur51' ? 6 : ((kind === 'sur71' || kind === 'surid') ?
 spec.dur = state.signalDur; spec.level = state.signalLevel; spec.chan = state.signalChan;
 spec.padA = 0; spec.padB = 0; spec.fadeIn = 0; spec.fadeOut = 0; spec.loop = false; spec.norm = 'none';
 spec.reverb = false;
-job($('signalGen'), 'Генерация…', async function (hooks) {
+job($('signalGen'), t('generating'), async function (hooks) {
 const r = await runDsp('run', spec, hooks);
-applyResult(r, 'sig-' + kind, { label: 'Сигнал · ' + $('signalKind').options[$('signalKind').selectedIndex].text });
+applyResult(r, 'sig-' + kind, { label: tf('signalMeta', t(SIG_KEYS[kind])) });
 });
 });
 function ditherRun(on) {
@@ -2700,9 +3436,9 @@ spec.source = 'dither'; spec.tpdf = on; spec.sr = 44100; spec.channels = 1; spec
 spec.padA = 0; spec.padB = 0; spec.fadeIn = 0; spec.fadeOut = 0; spec.loop = false; spec.norm = 'none';
 spec.reverb = false;
 spec.seed = on ? 424242 : 171717;
-job(on ? $('ditherYes') : $('ditherNo'), 'Генерация…', async function (hooks) {
+job(on ? $('ditherYes') : $('ditherNo'), t('generating'), async function (hooks) {
 const r = await runDsp('run', spec, hooks);
-applyResult(r, on ? 'dither-tpdf' : 'dither-none', { label: 'Тон −90 dBFS · 16 бит · ' + (on ? 'с дизерингом' : 'без дизеринга') });
+applyResult(r, on ? 'dither-tpdf' : 'dither-none', { label: tf('ditherMeta', on ? t('ditherWith') : t('ditherWithout')) });
 });
 }
 $('ditherNo').addEventListener('click', function () { ditherRun(false); });
@@ -2714,9 +3450,9 @@ spec.source = 'calib'; spec.channels = 2; spec.bits = 16; spec.dither = true;
 spec.dur = state.calibDur; spec.band = state.calibBand; spec.chan = state.calibChan;
 spec.padA = 0; spec.padB = 0; spec.fadeIn = 0; spec.fadeOut = 0; spec.loop = false; spec.norm = 'none';
 spec.reverb = false;
-job($('calibBtn'), 'Генерация…', async function (hooks) {
+job($('calibBtn'), t('generating'), async function (hooks) {
 const r = await runDsp('run', spec, hooks);
-applyResult(r, 'calib', { label: 'Калибровка −20 dBFS RMS · ' + (state.calibBand === 'speech' ? '500–2k' : 'полная') + ' · ' + state.calibChan.toUpperCase() });
+applyResult(r, 'calib', { label: tf('calibMeta', state.calibBand === 'speech' ? '500–2k' : t('bandFull'), state.calibChan.toUpperCase()) });
 });
 });
 $('synthBtn').addEventListener('click', function () {
@@ -2728,10 +3464,9 @@ spec.bodyFrames = Math.round(state.synthDur * spec.sr);
 spec.channels = 2; spec.padA = 0; spec.padB = 0;
 spec.fadeIn = Math.round(0.3 * spec.sr); spec.fadeOut = Math.round(0.5 * spec.sr);
 spec.loop = false; spec.exact = false;
-const names = { wind: 'Ветер', rain: 'Дождь', surf: 'Прибой' };
-job($('synthBtn'), 'Генерация…', async function (hooks) {
+job($('synthBtn'), t('generating'), async function (hooks) {
 const r = await runDsp('run', spec, hooks);
-applyResult(r, 'synth-' + state.synthType, { label: names[state.synthType] + ' · дрейф ' + state.synthDrift + '%' });
+applyResult(r, 'synth-' + state.synthType, { label: t(state.synthType) + ' · ' + t('slowDrift') + ' ' + state.synthDrift + '%' });
 });
 });
 $('percBtn').addEventListener('click', function () {
@@ -2739,16 +3474,15 @@ nextSeed();
 const spec = baseSpec();
 spec.source = 'perc'; spec.percType = state.percType; spec.channels = 1;
 spec.padA = 0; spec.padB = 0; spec.fadeIn = 0; spec.fadeOut = 0; spec.loop = false; spec.norm = 'none';
-const names = { snare: 'Барабан', hat: 'Тарелка', kick: 'Бочка' };
-job($('percBtn'), 'Генерация…', async function (hooks) {
+job($('percBtn'), t('generating'), async function (hooks) {
 const r = await runDsp('run', spec, hooks);
-applyResult(r, 'perc-' + state.percType, { label: names[state.percType] });
+applyResult(r, 'perc-' + state.percType, { label: t(state.percType) });
 });
 });
 
 function ownSyncUI() {
 const m = state.ownMode;
-$('ownModeNote').textContent = OWN_NOTE[m];
+$('ownModeNote').textContent = OWN_NOTES[m][state.lang === 'en' ? 1 : 0];
 $('ownSynthDurSection').classList.toggle('hidden', m === 'asis');
 $('ownGrainSection').classList.toggle('hidden', m !== 'granular');
 $('ownTapsSection').classList.toggle('hidden', m !== 'match');
@@ -2758,13 +3492,14 @@ $('ownLoop').closest('.switch-row').classList.toggle('dimmed', !loopOk);
 $('ownTarget').disabled = state.ownNorm === 'none';
 $('ownTargetNum').disabled = state.ownNorm === 'none';
 $('ownTargetUnit').textContent = NORM_UNIT[state.ownNorm];
+$('ownRecLabel').textContent = own.rec ? t('recording') : t('record');
 syncReverbUI();
 }
 function ownInfoUpdate() {
 const el = $('ownInfo');
-if (!own.arrays) { el.textContent = 'Источник не выбран'; return; }
+if (!own.arrays) { el.textContent = t('noSource'); return; }
 const n = own.arrays[0].length;
-el.textContent = own.name + ' · ' + fmtTimeMs(n / own.sr) + ' · ' + own.sr + ' Гц · ' + (own.ch === 2 ? 'стерео' : 'моно') + ' · ' + fmtSize(n * own.ch * 4) + ' в памяти';
+el.textContent = tf('ownInfoFmt', own.name, fmtTimeMs(n / own.sr), own.sr, own.ch === 2 ? t('stereo') : t('mono'), fmtSize(n * own.ch * 4));
 }
 function ownAbort() {
 if (!own.rec) return;
@@ -2772,11 +3507,12 @@ own.rec = false;
 if (own.timer) { clearInterval(own.timer); own.timer = 0; }
 try { if (own.node) { own.node.port.postMessage({ stop: true }); own.node.disconnect(); } } catch (e) {}
 try { if (own.sp) { own.sp.onaudioprocess = null; own.sp.disconnect(); } } catch (e) {}
+try { if (own.srcNode) own.srcNode.disconnect(); } catch (e) {}
 try { if (own.sink) own.sink.disconnect(); } catch (e) {}
-try { if (own.stream) own.stream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {}
-own.node = null; own.sp = null; own.sink = null; own.stream = null;
+try { if (own.stream) own.stream.getTracks().forEach(function (tr) { tr.stop(); }); } catch (e) {}
+own.node = null; own.sp = null; own.sink = null; own.stream = null; own.srcNode = null;
 $('ownRec').classList.remove('on');
-$('ownRecLabel').textContent = 'Записать';
+$('ownRecLabel').textContent = t('record');
 $('ownMeterFill').style.transform = 'scaleX(0)';
 $('ownMeterVal').textContent = '—';
 }
@@ -2806,7 +3542,7 @@ function ownFinish() {
 if (!own.rec) return;
 const chunks = own.chunks, frames = own.frames, sr = own.sr;
 ownAbort();
-if (!chunks || frames < sr * 0.2) { pFail('Запись слишком короткая'); return; }
+if (!chunks || frames < sr * 0.2) { pFail(t('recTooShort')); return; }
 const arr = [];
 for (let c = 0; c < chunks.length; c++) {
 const d = new Float32Array(frames);
@@ -2815,8 +3551,9 @@ for (let i = 0; i < chunks[c].length && p < frames; i++) { const b = chunks[c][i
 arr.push(d);
 }
 own.chunks = null;
-own.arrays = arr; own.sr = sr; own.ch = arr.length; own.name = 'Запись с микрофона';
+own.arrays = arr; own.sr = sr; own.ch = arr.length; own.name = t('micRecording');
 ownInfoUpdate(); refresh();
+saveOwnSession();
 ownGenerate();
 }
 async function ownEnsureRecWorklet() {
@@ -2833,16 +3570,16 @@ return own.workletOk;
 }
 async function ownStart() {
 if (own.rec || state.busy) return;
-if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { pFail('Браузер не даёт доступ к микрофону. Загрузите файл вместо записи'); return; }
+if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { pFail(t('micUnsupported')); return; }
 let stream;
 try {
 stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: { ideal: 2 } } });
 } catch (e) {
 const n = e && e.name ? e.name : '';
-if (n === 'NotAllowedError' || n === 'SecurityError') pFail('Доступ к микрофону запрещён. Разрешите его в настройках сайта или загрузите файл');
-else if (n === 'NotFoundError' || n === 'OverconstrainedError') pFail('Микрофон не найден. Загрузите файл вместо записи');
-else if (n === 'NotReadableError') pFail('Микрофон занят другим приложением');
-else pFail('Не удалось открыть микрофон: ' + friendly(e));
+if (n === 'NotAllowedError' || n === 'SecurityError') pFail(t('micDenied'));
+else if (n === 'NotFoundError' || n === 'OverconstrainedError') pFail(t('micNotFound'));
+else if (n === 'NotReadableError') pFail(t('micBusy'));
+else pFail(tf('micFail', friendly(e)));
 return;
 }
 try {
@@ -2855,6 +3592,7 @@ const ch = Math.max(1, Math.min(2, settings.channelCount || 1));
 own.chunks = []; for (let i = 0; i < ch; i++) own.chunks.push([]);
 own.frames = 0; own.rec = true; own.t0 = Date.now(); own.meterT = 0;
 const srcNode = c.createMediaStreamSource(stream);
+own.srcNode = srcNode;
 own.sink = c.createGain(); own.sink.gain.value = 0;
 own.sink.connect(c.destination);
 const useWl = await ownEnsureRecWorklet();
@@ -2875,9 +3613,8 @@ ownCollect(out);
 srcNode.connect(sp); sp.connect(own.sink);
 own.sp = sp;
 }
-own.srcNode = srcNode;
 $('ownRec').classList.add('on');
-$('ownRecLabel').textContent = 'Остановить';
+$('ownRecLabel').textContent = t('recording');
 own.timer = setInterval(function () {
 const el = Math.min(600, (Date.now() - own.t0) / 1000);
 $('ownTime').textContent = fmtTime(el) + ' / 10:00';
@@ -2886,7 +3623,7 @@ if (el >= 600) ownFinish();
 $('ownTime').textContent = '0:00 / 10:00';
 } catch (e) {
 ownAbort();
-pFail('Запись не запустилась: ' + friendly(e));
+pFail(tf('recFail', friendly(e)));
 }
 }
 function ownSpec() {
@@ -2901,56 +3638,49 @@ padA: Math.round(state.ownPadA * sr), padB: Math.round(state.ownPadB * sr),
 fadeIn: Math.round(state.ownFadeIn * sr), fadeOut: Math.round(state.ownFadeOut * sr),
 loop: m !== 'asis' && state.ownLoop
 };
-if (m === 'asis') {
 spec.source = 'arrays';
-spec.kind = 'own';
 spec.arrays = own.arrays.map(function (a) { return a.slice(); });
-spec.bodyFrames = own.arrays[0].length;
-spec.loop = false;
-} else {
-spec.source = 'arrays';
-spec.kind = m;
-spec.arrays = own.arrays.map(function (a) { return a.slice(); });
-spec.bodyFrames = Math.max(1, Math.round(state.ownDur * sr));
-spec.taps = state.ownTaps;
-spec.grain = state.ownGrain;
-}
+if (m === 'asis') { spec.kind = 'own'; spec.bodyFrames = own.arrays[0].length; spec.loop = false; }
+else { spec.kind = m; spec.bodyFrames = Math.max(1, Math.round(state.ownDur * sr)); spec.taps = state.ownTaps; spec.grain = state.ownGrain; }
 return spec;
+}
+function ownLabel() {
+const names = { asis: t('ownAsisLabel'), match: t('ownMatchLabel'), granular: t('ownGranularLabel') };
+return names[state.ownMode] + (state.ownReverb ? t('spaceSuffix') : '');
 }
 function ownGenerate() {
 if (!own.arrays || state.busy) return;
 nextSeed();
 const spec = ownSpec();
-const names = { asis: 'Свой звук', match: 'Спектральный двойник', granular: 'Гранулярная текстура' };
-job($('ownGen'), 'Генерация…', async function (hooks) {
+job($('ownGen'), t('generating'), async function (hooks) {
 const r = await runDsp('run', spec, hooks);
-applyResult(r, 'own-' + state.ownMode, { label: names[state.ownMode] + (state.ownReverb ? ' · пространство' : '') });
+applyResult(r, 'own-' + state.ownMode, { label: ownLabel() });
 });
 }
 $('ownRec').addEventListener('click', function () { if (own.rec) ownFinish(); else ownStart(); });
 $('ownFile').addEventListener('change', function () {
 const f = $('ownFile').files[0]; if (!f) return;
 ownAbort();
-job($('ownGen'), 'Генерация…', async function (hooks) {
-hooks.progress(0.05, 'Чтение файла'); await tick();
+job($('ownGen'), t('generating'), async function (hooks) {
+hooks.progress(0.05, 'readingFile'); await tick();
 const ab = await readBuf(f);
-pBusy('Декодирование'); await tick();
+pBusy('decoding'); await tick();
 const c = await ensureCtx();
 let dec;
-try { dec = await c.decodeAudioData(ab); } catch (e) { throw new Error('Не удалось прочитать аудио — WAV, MP3, OGG, M4A, FLAC'); }
+try { dec = await c.decodeAudioData(ab); } catch (e) { throw new Error(t('badAudio')); }
 const sr = dec.sampleRate, len = dec.length, ch = Math.min(2, dec.numberOfChannels);
-if (len / sr > 600) throw new Error('Файл длиннее 10 минут');
-if (len * ch * 4 > 300 * 1048576) throw new Error('Файл слишком большой для обработки в памяти');
+if (len / sr > 600) throw new Error(t('trackTooLong'));
+if (len * ch * 4 > 300 * 1048576) throw new Error(t('memError'));
 const arr = [];
 for (let k = 0; k < ch; k++) arr.push(dec.getChannelData(k).slice());
 dec = null;
 own.arrays = arr; own.sr = sr; own.ch = ch; own.name = f.name;
 $('ownFileName').textContent = f.name;
 ownInfoUpdate();
+await saveOwnSession();
 const spec = ownSpec();
-const names = { asis: 'Свой звук', match: 'Спектральный двойник', granular: 'Гранулярная текстура' };
 const r = await runDsp('run', spec, hooks);
-applyResult(r, 'own-' + state.ownMode, { label: names[state.ownMode] + (state.ownReverb ? ' · пространство' : '') });
+applyResult(r, 'own-' + state.ownMode, { label: ownLabel() });
 });
 });
 $('ownMode').addEventListener('change', function () { state.ownMode = $('ownMode').value; ownSyncUI(); save(); });
@@ -2981,8 +3711,7 @@ drawWave();
 wf.addEventListener('pointerdown', function (e) {
 if (!state.analysis || !(audioEl.duration > 0)) return;
 try { wf.setPointerCapture(e.pointerId); } catch (x) {}
-const f = waveFrac(e);
-wDrag = { f: f, x: e.clientX, pan: e.shiftKey, a: waveView.a, b: waveView.b, moved: false };
+wDrag = { f: waveFrac(e), x: e.clientX, pan: e.shiftKey, a: waveView.a, b: waveView.b, moved: false };
 });
 wf.addEventListener('pointermove', function (e) {
 if (!wDrag) return;
@@ -3001,12 +3730,12 @@ waveView.sa = Math.min(t0, t1); waveView.sb = Math.max(t0, t1);
 }
 drawWave();
 });
-function waveEnd(e) {
+function waveEnd() {
 if (!wDrag) return;
 const d = wDrag; wDrag = null;
 if (!d.moved && audioEl.duration > 0) {
-const t = waveView.a + (waveView.b - waveView.a) * d.f;
-audioEl.currentTime = clamp(t, 0, 0.999) * audioEl.duration;
+const p = waveView.a + (waveView.b - waveView.a) * d.f;
+audioEl.currentTime = clamp(p, 0, 0.999) * audioEl.duration;
 seekBar.value = Math.floor(audioEl.currentTime / audioEl.duration * 1000);
 timeText(); updateMeters(); drawWave();
 } else if (!d.pan && waveView.sb - waveView.sa < 0.0008) {
@@ -3042,12 +3771,12 @@ const fq = normFreq(1 - y / ph);
 const k = clamp(Math.round(fq * a.fftSize / state.sr), 1, a.half - 1);
 const col = clamp(Math.floor(x / pw * a.cols), 0, a.cols - 1);
 const d = 10 * Math.log10(Math.max(a.spectra[col * a.half + k], 1e-20)) + lg;
-txt = '<span>t ' + fmtTime(col * a.hop / state.sr) + '</span><span>f ' + (fq >= 1000 ? num(fq / 1000, 2) + ' кГц' : num(fq, 0) + ' Гц') + '</span><span>' + db(d, 1) + ' dBFS</span>';
+txt = '<span>t ' + fmtTime(col * a.hop / state.sr) + '</span><span>f ' + hzLabel(fq) + '</span><span>' + db(d, 1) + ' dBFS</span>';
 } else {
 const fq = normFreq(x / pw);
 const k = clamp(Math.round(fq * a.fftSize / state.sr), 1, a.half - 1);
 const d = 10 * Math.log10(Math.max(a.avg[k], 1e-20)) + lg;
-txt = '<span>f ' + (fq >= 1000 ? num(fq / 1000, 2) + ' кГц' : num(fq, 0) + ' Гц') + '</span><span>' + db(d, 1) + ' dBFS</span><span>усреднение по ' + a.cols + ' окнам</span>';
+txt = '<span>f ' + hzLabel(fq) + '</span><span>' + db(d, 1) + ' dBFS</span><span>' + tf('cursorAvg', a.cols) + '</span>';
 }
 $('cursorRead').innerHTML = txt;
 }
@@ -3057,15 +3786,15 @@ $('spectroCanvas').addEventListener('pointerleave', function () { $('cursorRead'
 $('welchCanvas').addEventListener('pointerleave', function () { $('cursorRead').innerHTML = ''; });
 
 $('tabs').addEventListener('click', function (e) {
-const t = e.target.closest('.tab'); if (!t) return;
-if (state.mode === 'lab' && t.dataset.tab !== 'lab') { stopLab(); liveStop(); ownAbort(); resetLab(); }
+const tb = e.target.closest('.tab'); if (!tb) return;
+if (state.mode === 'lab' && tb.dataset.tab !== 'lab') { stopLab(); liveStop(); ownAbort(); resetLab(); }
 $('tabs').querySelectorAll('.tab').forEach(function (x) { x.classList.remove('active'); x.setAttribute('aria-selected', 'false'); });
-t.classList.add('active'); t.setAttribute('aria-selected', 'true');
-state.mode = t.dataset.tab;
+tb.classList.add('active'); tb.setAttribute('aria-selected', 'true');
+state.mode = tb.dataset.tab;
 $('generatorSidebar').classList.toggle('hidden', state.mode !== 'generate');
 $('mixSidebar').classList.toggle('hidden', state.mode !== 'mix');
 $('labSidebar').classList.toggle('hidden', state.mode !== 'lab');
-$('stageLabel').textContent = state.mode === 'mix' ? 'Наложение' : (state.mode === 'lab' ? 'Лаборатория' : 'Визуализация');
+$('stageLabel').textContent = state.mode === 'mix' ? t('tabMix') : (state.mode === 'lab' ? t('tabLab') : t('stageVisual'));
 syncView(); save();
 });
 $('labTools').addEventListener('click', function (e) {
@@ -3077,10 +3806,17 @@ state.labTool = b.dataset.tool;
 document.querySelectorAll('.lab-panel').forEach(function (p) { p.classList.toggle('hidden', p.dataset.panel !== state.labTool); });
 syncView(); save();
 });
+$('langToggle').addEventListener('click', function (e) {
+const b = e.target.closest('.lang-btn'); if (!b) return;
+if (state.lang === b.dataset.lang) return;
+state.lang = b.dataset.lang;
+applyI18n();
+save();
+});
 document.addEventListener('keydown', function (e) {
-const t = e.target, tag = t && t.tagName ? t.tagName : '';
-const typing = tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || (t && t.isContentEditable);
-const knob = t && t.classList && t.classList.contains('knob');
+const el = e.target, tag = el && el.tagName ? el.tagName : '';
+const typing = tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || (el && el.isContentEditable);
+const knob = el && el.classList && el.classList.contains('knob');
 if (e.code === 'Space') { if (typing || tag === 'BUTTON' || knob) return; e.preventDefault(); togglePlay(); }
 else if (e.code === 'ArrowLeft' || e.code === 'ArrowRight') { if (typing || knob) return; e.preventDefault(); seekBy((e.code === 'ArrowLeft' ? -1 : 1) * (e.shiftKey ? 30 : 5)); }
 else if (e.code === 'Home') { if (typing || knob) return; e.preventDefault(); seekBy(-1e9); }
@@ -3091,6 +3827,84 @@ new ResizeObserver(function () { if (resizeRaf) cancelAnimationFrame(resizeRaf);
 new ResizeObserver(measureRail).observe($('progressTrack'));
 } else window.addEventListener('resize', function () { renderView(); measureRail(); });
 window.addEventListener('beforeunload', function () { ownAbort(); if (state.url) URL.revokeObjectURL(state.url); save(); });
+
+function applyI18n() {
+document.documentElement.lang = state.lang === 'en' ? 'en' : 'ru';
+document.querySelectorAll('[data-i18n]').forEach(function (el) { el.textContent = t(el.dataset.i18n); });
+document.querySelectorAll('[data-i18n-aria]').forEach(function (el) { el.setAttribute('aria-label', t(el.dataset.i18nAria)); });
+document.querySelectorAll('[data-i18n-title]').forEach(function (el) { el.setAttribute('title', t(el.dataset.i18nTitle)); });
+$('langToggle').querySelectorAll('.lang-btn').forEach(function (b) { const on = b.dataset.lang === state.lang; b.classList.toggle('active', on); b.setAttribute('aria-pressed', on ? 'true' : 'false'); });
+rebuildSwatches();
+fillRoomSelect('reverbPreset', state.reverbPreset);
+fillRoomSelect('liveReverbPreset', state.liveReverbPreset);
+fillRoomSelect('ownReverbPreset', state.ownPreset);
+fillMoodSelects();
+fillSignalSelect();
+fillTimers();
+Object.keys(knobs).forEach(function (k) { knobs[k].refresh(); });
+$('seedLock').textContent = state.seedAuto ? t('seedAuto') : t('seedFixed');
+$('mixFileName').textContent = state.mixFile ? state.mixFile.name : t('chooseFile');
+if (!state.mixFile) $('mixInfo').textContent = t('noFile');
+$('ownFileName').textContent = own.arrays && own.name !== t('micRecording') ? own.name : (own.arrays ? own.name : t('orLoadFile'));
+$('stageLabel').textContent = state.mode === 'mix' ? t('tabMix') : (state.mode === 'lab' ? t('tabLab') : t('stageVisual'));
+$('tiltNote').textContent = (state.lang === 'en' ? 'Adds ' : 'Добавляет ') + db(-3.0103 * state.tilt, 2) + ' ' + t('slopeUnit');
+syncNormUI(); syncDitherUI(); syncSignalUI(); syncCurveRange(); syncReverbUI(); syncMoodUI(); ownSyncUI(); ownInfoUpdate();
+estimate();
+playIcon(!audioEl.paused);
+if (state.meta) $('stageMeta').textContent = stageMetaText();
+if (dock.dataset.state === 'idle') $('progressLabel').textContent = t('ready');
+renderChips(); buildLtas(); updateMeters(); renderView();
+if (labSession) {
+if (labSession.kind === 'notch') $('stageMeta').textContent = tf('notchMeta', state.notchFreq, num(state.notchQ, 1));
+else if (labSession.kind === 'bin') $('stageMeta').textContent = tf('binMeta', state.binBase, num(state.binBeat, 1));
+else if (labSession.kind === 'rot8d') $('stageMeta').textContent = tf('rotMeta', state.rot8dSpeed);
+else if (labSession.kind === 'test') $('stageMeta').textContent = tf('testMeta', typeLabel(state.testType));
+}
+if (live.on) $('stageMeta').textContent = tf('liveMeta', typeLabel(state.liveType), db(state.liveLevel, 0));
+refresh();
+}
+
+async function restoreSession() {
+restoring = true;
+try {
+const mf = await idbGet('mixFile');
+if (mf && mf.name) {
+state.mixFile = mf;
+$('mixFileName').textContent = mf.name;
+$('mixInfo').textContent = tf('fileSize', fmtSize(mf.size));
+}
+const ow = await idbGet('own');
+if (ow && ow.blob) {
+try {
+const ab = await ow.blob.arrayBuffer();
+const f = new Float32Array(ab);
+const n = ow.frames || Math.floor(f.length / ow.ch);
+const arr = [];
+for (let c = 0; c < ow.ch; c++) {
+const d = new Float32Array(n);
+for (let i = 0; i < n; i++) d[i] = f[i * ow.ch + c];
+arr.push(d);
+}
+own.arrays = arr; own.sr = ow.sr; own.ch = ow.ch; own.name = ow.name || t('micRecording');
+$('ownFileName').textContent = own.name;
+} catch (e) {}
+}
+const saved = await idbGet('result');
+if (saved && saved.r && saved.r.master) {
+state.mp3Master = saved.mp3Master || null;
+state.mp3Ch = saved.mp3Ch || 2;
+state.mp3Gain = saved.mp3Gain || 1;
+applyResult(saved.r, saved.key, saved.meta, true);
+state.mp3Master = saved.mp3Master || saved.r.masterStereo || saved.r.master;
+state.mp3Ch = saved.mp3Ch || (saved.r.masterStereo ? 2 : saved.r.ch);
+state.mp3Gain = saved.mp3Gain || saved.r.previewGain || saved.r.gain;
+pHint(t('sessionRestored'));
+}
+} catch (e) {}
+restoring = false;
+ownInfoUpdate();
+refresh();
+}
 
 initWorker();
 initMedia();
@@ -3108,20 +3922,16 @@ $('ditherToggle').checked = state.dither;
 $('keepLevelToggle').checked = state.keepLevel;
 $('exactToggle').checked = state.exact;
 $('reverbToggle').checked = state.reverb;
-$('reverbPreset').value = state.reverbPreset;
 $('liveReverbToggle').checked = state.liveReverb;
-$('liveReverbPreset').value = state.liveReverbPreset;
 $('curveTaps').value = String(state.curveTaps);
-$('signalKind').value = state.signalKind;
 $('ownMode').value = state.ownMode;
 $('ownTaps').value = String(state.ownTaps);
 $('ownNorm').value = state.ownNorm;
 $('ownReverb').checked = state.ownReverb;
-$('ownReverbPreset').value = state.ownPreset;
 $('ownLoop').checked = state.ownLoop;
 $('seedNum').value = state.seed;
 $('seedLock').classList.toggle('active', state.seedAuto);
-$('seedLock').textContent = state.seedAuto ? 'Авто' : 'Фикс';
+$('seedLock').setAttribute('aria-pressed', state.seedAuto ? 'true' : 'false');
 $('fftSize').value = String(state.fftSize);
 $('fftWindow').value = state.window;
 $('freqScale').value = state.freqScale;
@@ -3129,21 +3939,15 @@ $('specTop').value = state.specTop; $('specTopVal').textContent = db(state.specT
 $('specRange').value = state.specRange; $('specRangeVal').textContent = state.specRange;
 $('volume').value = state.volume; $('volNum').textContent = state.volume + '%';
 audioEl.volume = state.volume / 100;
-[['channelSegmented', 'channels', String(state.channels)], ['distSegmented', 'dist', state.dist], ['signalChannel', 'schan', state.signalChan], ['calibBand', 'band', state.calibBand], ['calibChannel', 'cchan', state.calibChan], ['synthType', 'synth', state.synthType], ['percType', 'perc', state.percType], ['notchTimer', 'min', String(state.notchTimer)], ['binTimer', 'min', String(state.binTimer)]].forEach(function (g) {
+[['channelSegmented', 'channels', String(state.channels)], ['distSegmented', 'dist', state.dist], ['signalChannel', 'schan', state.signalChan], ['calibBand', 'band', state.calibBand], ['calibChannel', 'cchan', state.calibChan], ['synthType', 'synth', state.synthType], ['percType', 'perc', state.percType]].forEach(function (g) {
 $(g[0]).querySelectorAll('.seg').forEach(function (x) { const on = x.dataset[g[1]] === g[2]; x.classList.toggle('active', on); x.setAttribute('aria-checked', on ? 'true' : 'false'); });
 });
-syncNormUI();
-syncDitherUI();
-syncSignalUI();
-syncCurveRange();
-ownSyncUI();
-ownInfoUpdate();
+applyI18n();
 setLoop(state.loop);
-$('tiltNote').textContent = 'Добавляет ' + db(-3.0103 * state.tilt, 2) + ' дБ/окт к выбранному виду шума';
-estimate();
 measureRail();
 syncView();
-refresh();
 showVisual(curveMode() ? 'curve' : 'empty');
 if (curveMode()) drawCurve();
+pIdle();
+restoreSession();
 })();
