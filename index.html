@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>White Noise Lab</title>
-<meta name="description" content="Исследовательская лаборатория шума: генерация, наложение, свой звук, измерения громкости, спектрограмма, третьоктавный анализ, тестовые сигналы">
+<meta name="description" content="Исследовательская лаборатория шума: генерация под настроение и задачу, наложение, свой звук, измерения громкости, спектрограмма, третьоктавный анализ, тестовые сигналы">
 <meta name="theme-color" content="#141210">
 <meta name="color-scheme" content="dark">
 <link rel="icon" type="image/svg+xml" sizes="any" href="favicon.svg">
@@ -22,621 +22,605 @@
     <span class="logo-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M2 12h2M6 7v10M10 4v16M14 8v8M18 5v14M22 12h-2"/></svg></span>
     <span>White Noise Lab</span>
   </div>
-  <nav class="tabs" id="tabs" role="tablist" aria-label="Разделы">
-    <button class="tab active" data-tab="generate" type="button" role="tab" id="tab-generate" aria-selected="true" aria-controls="generatorSidebar">Генератор</button>
-    <button class="tab" data-tab="mix" type="button" role="tab" id="tab-mix" aria-selected="false" aria-controls="mixSidebar">Наложение</button>
-    <button class="tab" data-tab="lab" type="button" role="tab" id="tab-lab" aria-selected="false" aria-controls="labSidebar">Лаборатория</button>
-  </nav>
+  <div class="header-right">
+    <nav class="tabs" id="tabs" role="tablist" data-i18n-aria="tabsAria">
+      <button class="tab active" data-tab="generate" type="button" role="tab" id="tab-generate" aria-selected="true" aria-controls="generatorSidebar" data-i18n="tabGen">Генератор</button>
+      <button class="tab" data-tab="mix" type="button" role="tab" id="tab-mix" aria-selected="false" aria-controls="mixSidebar" data-i18n="tabMix">Наложение</button>
+      <button class="tab" data-tab="lab" type="button" role="tab" id="tab-lab" aria-selected="false" aria-controls="labSidebar" data-i18n="tabLab">Лаборатория</button>
+    </nav>
+    <div class="lang-toggle" id="langToggle" role="group" data-i18n-aria="langAria">
+      <button class="lang-btn active" data-lang="ru" type="button" aria-pressed="true">RU</button>
+      <button class="lang-btn" data-lang="en" type="button" aria-pressed="false">EN</button>
+    </div>
+  </div>
 </header>
 
 <main class="workspace">
 
   <aside class="panel sidebar" id="generatorSidebar" role="tabpanel" aria-labelledby="tab-generate">
-    <div class="section">
-      <div class="section-label" id="lbl-type">Тип шума</div>
+    <div class="section" id="typeSection">
+      <div class="section-label" id="lbl-type" data-i18n="noiseType">Тип шума</div>
       <div class="swatches" id="swatches" role="radiogroup" aria-labelledby="lbl-type"></div>
     </div>
 
     <div class="section">
-      <div class="section-label plain">Длительность</div>
+      <div class="section-label plain" data-i18n="duration">Длительность</div>
       <div class="input-row">
-        <input type="range" class="slider" id="durationSlider" min="1" max="600" step="1" value="60" aria-label="Длительность, секунды">
-        <input type="number" class="num-input" id="durationNum" min="1" max="600" step="1" value="60"><span class="unit">сек</span>
+        <input type="range" class="slider" id="durationSlider" min="1" max="600" step="1" value="60" data-i18n-aria="durationAria">
+        <input type="number" class="num-input" id="durationNum" min="1" max="600" step="1" value="60"><span class="unit" data-i18n="sec">сек</span>
       </div>
     </div>
 
     <div class="section">
-      <div class="section-label plain">Частота дискретизации</div>
-      <select class="select" id="sampleRateSelect" aria-label="Частота дискретизации">
-        <option value="22050">22 050 Гц</option><option value="44100" selected>44 100 Гц</option>
-        <option value="48000">48 000 Гц</option><option value="96000">96 000 Гц</option>
+      <div class="section-label plain" data-i18n="sampleRate">Частота дискретизации</div>
+      <select class="select" id="sampleRateSelect" data-i18n-aria="sampleRate">
+        <option value="22050">22 050 Hz</option><option value="44100" selected>44 100 Hz</option>
+        <option value="48000">48 000 Hz</option><option value="96000">96 000 Hz</option>
       </select>
     </div>
 
     <div class="section">
-      <div class="section-label plain">Битрейт</div>
-      <select class="select" id="bitDepthSelect" aria-label="Битрейт">
-        <option value="16">16 бит</option><option value="24" selected>24 бит</option><option value="32">32 бит</option>
+      <div class="section-label plain" data-i18n="bitDepth">Битрейт</div>
+      <select class="select" id="bitDepthSelect" data-i18n-aria="bitDepth">
+        <option value="16" data-i18n="bit16">16 бит</option><option value="24" selected data-i18n="bit24">24 бит</option><option value="32" data-i18n="bit32">32 бит</option>
       </select>
     </div>
 
     <label class="switch-row" for="ditherToggle" id="ditherRow">
       <input type="checkbox" id="ditherToggle" class="switch-input" checked>
       <span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span>
-      <span class="switch-text">Дизеринг при 16 бит<span class="switch-sub" id="ditherSub">Убирает ступеньки квантования на тихих участках и длинных фейдах</span></span>
+      <span class="switch-text"><span data-i18n="ditherTitle">Дизеринг при 16 бит</span><span class="switch-sub" id="ditherSub"></span></span>
     </label>
 
     <div class="section">
-      <div class="section-label plain">Каналы</div>
-      <div class="segmented" id="channelSegmented" role="radiogroup" aria-label="Каналы">
-        <button class="seg active" data-channels="2" type="button" role="radio" aria-checked="true">Стерео</button>
-        <button class="seg" data-channels="1" type="button" role="radio" aria-checked="false">Моно</button>
+      <div class="section-label plain" data-i18n="channels">Каналы</div>
+      <div class="segmented" id="channelSegmented" role="radiogroup" data-i18n-aria="channels">
+        <button class="seg active" data-channels="2" type="button" role="radio" aria-checked="true" data-i18n="stereo">Стерео</button>
+        <button class="seg" data-channels="1" type="button" role="radio" aria-checked="false" data-i18n="mono">Моно</button>
       </div>
     </div>
 
-    <div class="section">
-      <div class="section-label plain">Распределение отсчётов</div>
-      <div class="segmented" id="distSegmented" role="radiogroup" aria-label="Распределение">
-        <button class="seg active" data-dist="uniform" type="button" role="radio" aria-checked="true">Равномерное</button>
-        <button class="seg" data-dist="gauss" type="button" role="radio" aria-checked="false">Гауссово</button>
+    <div class="section" id="distSection">
+      <div class="section-label plain" data-i18n="distribution">Распределение отсчётов</div>
+      <div class="segmented" id="distSegmented" role="radiogroup" data-i18n-aria="distribution">
+        <button class="seg active" data-dist="uniform" type="button" role="radio" aria-checked="true" data-i18n="uniform">Равномерное</button>
+        <button class="seg" data-dist="gauss" type="button" role="radio" aria-checked="false" data-i18n="gaussian">Гауссово</button>
       </div>
-      <div class="note">Равномерное: куртозис 1,8 (эксцесс −1,2) · крест-фактор 4,8 дБ. Гауссово: куртозис 3,0 (эксцесс 0) · крест-фактор 12–14 дБ</div>
+      <div class="note" data-i18n="distNote"></div>
     </div>
 
     <div class="section">
-      <div class="section-label plain">Нормализация</div>
-      <select class="select" id="normModeSelect" aria-label="Режим нормализации">
-        <option value="peak">По пиковому уровню</option>
-        <option value="truepeak" selected>По истинному пику</option>
-        <option value="rms">По RMS</option>
-        <option value="lufs">По громкости LUFS</option>
-        <option value="none">Без нормализации</option>
+      <div class="section-label plain" data-i18n="normalization">Нормализация</div>
+      <select class="select" id="normModeSelect" data-i18n-aria="normalization">
+        <option value="peak" data-i18n="normPeak">По пиковому уровню</option>
+        <option value="truepeak" selected data-i18n="normTrue">По истинному пику</option>
+        <option value="rms" data-i18n="normRms">По RMS</option>
+        <option value="lufs" data-i18n="normLufs">По громкости LUFS</option>
+        <option value="none" data-i18n="normNone">Без нормализации</option>
       </select>
       <div class="input-row">
-        <input type="range" class="slider" id="normTargetSlider" min="-40" max="0" step="0.5" value="-1" aria-label="Целевой уровень">
+        <input type="range" class="slider" id="normTargetSlider" min="-40" max="0" step="0.5" value="-1" data-i18n-aria="targetLevel">
         <input type="number" class="num-input" id="normTargetNum" min="-40" max="0" step="0.5" value="-1">
         <span class="unit" id="normTargetUnit">dBTP</span>
       </div>
       <div class="note" id="normNote"></div>
     </div>
 
-    <div class="section">
-      <div class="section-label plain">Дополнительный наклон α</div>
+    <div class="section" id="tiltSection">
+      <div class="section-label plain" data-i18n="tiltTitle">Дополнительный наклон α</div>
       <div class="input-row">
-        <input type="range" class="slider" id="tiltSlider" min="-2" max="2" step="0.05" value="0" aria-label="Дополнительный наклон спектра">
+        <input type="range" class="slider" id="tiltSlider" min="-2" max="2" step="0.05" value="0" data-i18n-aria="tiltTitle">
         <input type="number" class="num-input" id="tiltNum" min="-2" max="2" step="0.05" value="0">
       </div>
-      <div class="note" id="tiltNote">Наклон добавляется к выбранному виду шума</div>
+      <div class="note" id="tiltNote"></div>
     </div>
 
-    <label class="switch-row" for="exactToggle">
+    <label class="switch-row" for="exactToggle" id="exactRow">
       <input type="checkbox" id="exactToggle" class="switch-input">
       <span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span>
-      <span class="switch-text">Точный спектр<span class="switch-sub">Референсные кривые вместо фильтровых аппроксимаций. Медленнее в 3–5 раз</span></span>
+      <span class="switch-text"><span data-i18n="exactTitle">Точный спектр</span><span class="switch-sub" data-i18n="exactSub"></span></span>
     </label>
 
-    <div class="subhead">Пространство</div>
+    <div class="subhead" data-i18n="space">Пространство</div>
     <label class="switch-row" for="reverbToggle">
       <input type="checkbox" id="reverbToggle" class="switch-input">
       <span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span>
-      <span class="switch-text">Реверберация<span class="switch-sub">Помещает шум в пространство. На стационарном шуме эффект тонкий, всего заметнее на ударах и записях</span></span>
+      <span class="switch-text"><span data-i18n="reverbTitle">Реверберация</span><span class="switch-sub" data-i18n="reverbSub"></span></span>
     </label>
     <div class="section" id="reverbSection">
-      <select class="select" id="reverbPreset" aria-label="Пресет пространства">
-        <option value="room">Комната</option>
-        <option value="hall" selected>Зал</option>
-        <option value="opera">Опера</option>
-        <option value="cathedral">Собор</option>
-        <option value="parking">Парковка</option>
-        <option value="tunnel">Тоннель</option>
-      </select>
+      <select class="select" id="reverbPreset" data-i18n-aria="spacePreset"></select>
       <div class="input-row">
-        <input type="range" class="slider" id="reverbWet" min="0" max="100" step="1" value="30" aria-label="Доля пространства">
+        <input type="range" class="slider" id="reverbWet" min="0" max="100" step="1" value="30" data-i18n-aria="spaceAmount">
         <input type="number" class="num-input" id="reverbWetNum" min="0" max="100" step="1" value="30"><span class="unit">%</span>
       </div>
     </div>
 
-    <div class="subhead">Огибающая</div>
     <div class="section" id="fadeInSection">
-      <div class="section-label plain">Fade in</div>
-      <div class="input-row"><input type="range" class="slider" id="fadeInSlider" min="0" max="30" step="1" value="0" aria-label="Fade in, секунды"><input type="number" class="num-input" id="fadeInNum" min="0" max="30" step="1" value="0"><span class="unit">сек</span></div>
+      <div class="section-label plain" data-i18n="fadeIn">Fade in</div>
+      <div class="input-row"><input type="range" class="slider" id="fadeInSlider" min="0" max="30" step="1" value="0" data-i18n-aria="fadeIn"><input type="number" class="num-input" id="fadeInNum" min="0" max="30" step="1" value="0"><span class="unit" data-i18n="sec">сек</span></div>
     </div>
     <div class="section" id="fadeOutSection">
-      <div class="section-label plain">Fade out</div>
-      <div class="input-row"><input type="range" class="slider" id="fadeOutSlider" min="0" max="30" step="1" value="0" aria-label="Fade out, секунды"><input type="number" class="num-input" id="fadeOutNum" min="0" max="30" step="1" value="0"><span class="unit">сек</span></div>
+      <div class="section-label plain" data-i18n="fadeOut">Fade out</div>
+      <div class="input-row"><input type="range" class="slider" id="fadeOutSlider" min="0" max="30" step="1" value="0" data-i18n-aria="fadeOut"><input type="number" class="num-input" id="fadeOutNum" min="0" max="30" step="1" value="0"><span class="unit" data-i18n="sec">сек</span></div>
     </div>
     <div class="section" id="padStartSection">
-      <div class="section-label plain">Тишина в начале</div>
-      <div class="input-row"><input type="range" class="slider" id="padStartSlider" min="0" max="60" step="1" value="0" aria-label="Тишина в начале, секунды"><input type="number" class="num-input" id="padStartNum" min="0" max="60" step="1" value="0"><span class="unit">сек</span></div>
+      <div class="section-label plain" data-i18n="padStart">Тишина в начале</div>
+      <div class="input-row"><input type="range" class="slider" id="padStartSlider" min="0" max="60" step="1" value="0" data-i18n-aria="padStart"><input type="number" class="num-input" id="padStartNum" min="0" max="60" step="1" value="0"><span class="unit" data-i18n="sec">сек</span></div>
     </div>
     <div class="section" id="padEndSection">
-      <div class="section-label plain">Тишина в конце</div>
-      <div class="input-row"><input type="range" class="slider" id="padEndSlider" min="0" max="60" step="1" value="0" aria-label="Тишина в конце, секунды"><input type="number" class="num-input" id="padEndNum" min="0" max="60" step="1" value="0"><span class="unit">сек</span></div>
+      <div class="section-label plain" data-i18n="padEnd">Тишина в конце</div>
+      <div class="input-row"><input type="range" class="slider" id="padEndSlider" min="0" max="60" step="1" value="0" aria-label=""><input type="number" class="num-input" id="padEndNum" min="0" max="60" step="1" value="0"><span class="unit" data-i18n="sec">сек</span></div>
     </div>
 
     <label class="switch-row" for="loopToggle">
       <input type="checkbox" id="loopToggle" class="switch-input">
       <span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span>
-      <span class="switch-text">Повторять<span class="switch-sub">Конец файла плавно переходит в начало. Фейды и тишина отключаются</span></span>
+      <span class="switch-text"><span data-i18n="loopTitle">Повторять</span><span class="switch-sub" data-i18n="loopSub"></span></span>
     </label>
 
     <div class="section">
-      <div class="section-label plain">Seed</div>
+      <div class="section-label plain" data-i18n="seed">Seed</div>
       <div class="seed-row">
-        <input type="number" class="num-input" id="seedNum" min="1" max="4294967295" step="1" value="12345" aria-label="Seed генератора">
-        <button class="mini-btn" id="seedRandom" type="button">Случайный</button>
-        <button class="mini-btn active" id="seedLock" type="button" aria-pressed="true">Авто</button>
+        <input type="number" class="num-input" id="seedNum" min="1" max="4294967295" step="1" value="12345" data-i18n-aria="seedAria">
+        <button class="mini-btn" id="seedRandom" type="button" data-i18n="seedRandom">Случайный</button>
+        <button class="mini-btn active" id="seedLock" type="button" aria-pressed="true"></button>
       </div>
-      <div class="note">Один seed и одни параметры дают бит-в-бит одинаковый файл</div>
+      <div class="note" data-i18n="seedNote"></div>
+    </div>
+
+    <div class="section">
+      <div class="section-label plain" data-i18n="mood">Настроение</div>
+      <select class="select" id="moodSelect" data-i18n-aria="mood"></select>
+      <div class="note" id="moodNote"></div>
+    </div>
+
+    <div class="section">
+      <div class="section-label plain" data-i18n="task">Задача</div>
+      <select class="select" id="taskSelect" data-i18n-aria="task"></select>
+      <div class="note" id="taskNote"></div>
+    </div>
+
+    <div class="mood-read hidden" id="moodRead">
+      <div class="mood-read-title" data-i18n="computedProfile">Вычисленный профиль</div>
+      <div class="mood-grid" id="moodGrid"></div>
+      <div class="mood-formula" id="moodFormula"></div>
     </div>
 
     <div class="stack">
-      <button class="btn-primary" id="generateBtn" type="button">Сгенерировать</button>
-      <button class="btn-secondary hidden" id="cancelBtn" type="button">Отменить</button>
+      <button class="btn-primary" id="generateBtn" type="button" data-i18n="generate">Сгенерировать</button>
+      <button class="btn-secondary hidden" id="cancelBtn" type="button" data-i18n="cancel">Отменить</button>
     </div>
-    <div class="estimate" id="estimate">Примерный размер: —</div>
+    <div class="estimate" id="estimate"></div>
+    <button class="mini-btn" id="clearSession" type="button" data-i18n="clearSession">Очистить сохранённое</button>
   </aside>
 
   <aside class="panel sidebar hidden" id="mixSidebar" role="tabpanel" aria-labelledby="tab-mix">
     <div class="section">
-      <div class="section-label">Трек</div>
+      <div class="section-label" data-i18n="track">Трек</div>
       <label class="upload-mini" for="mixFileInput">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
-        <span id="mixFileName">Выбрать аудиофайл</span>
+        <span id="mixFileName"></span>
         <input type="file" id="mixFileInput" accept="audio/*" class="sr-file">
       </label>
-      <div class="estimate" id="mixInfo">Файл не выбран</div>
+      <div class="estimate" id="mixInfo"></div>
     </div>
 
     <div class="section">
-      <div class="section-label" id="lbl-mixtype">Шум</div>
+      <div class="section-label" id="lbl-mixtype" data-i18n="noise">Шум</div>
       <div class="swatches" id="mixSwatches" role="radiogroup" aria-labelledby="lbl-mixtype"></div>
     </div>
 
     <div class="section">
-      <div class="section-label plain">Отношение шум / трек</div>
-      <div class="input-row"><input type="range" class="slider" id="snrSlider" min="-40" max="20" step="1" value="-20" aria-label="Отношение шум к треку, дБ"><input type="number" class="num-input" id="snrNum" min="-40" max="20" step="1" value="-20"><span class="unit">дБ</span></div>
-      <div class="note">−20 дБ — шум тише трека. 0 дБ — равная мощность. +10 дБ — шум громче трека, как в жёстких наборах данных</div>
+      <div class="section-label plain" data-i18n="snrTitle">Отношение шум / трек</div>
+      <div class="input-row"><input type="range" class="slider" id="snrSlider" min="-40" max="20" step="1" value="-20" data-i18n-aria="snrTitle"><input type="number" class="num-input" id="snrNum" min="-40" max="20" step="1" value="-20"><span class="unit" data-i18n="db">дБ</span></div>
+      <div class="note" data-i18n="snrNote"></div>
     </div>
 
     <label class="switch-row" for="keepLevelToggle">
       <input type="checkbox" id="keepLevelToggle" class="switch-input" checked>
       <span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span>
-      <span class="switch-text">Сохранять уровень трека<span class="switch-sub">Без финальной нормализации: соотношение уровней остаётся физически честным</span></span>
+      <span class="switch-text"><span data-i18n="keepLevelTitle">Сохранять уровень трека</span><span class="switch-sub" data-i18n="keepLevelSub"></span></span>
     </label>
 
-    <div class="hint">Шум подмешивается без изменения длины и частоты трека. Мощность шума измеряется по 30-секундному участку того же потока</div>
-    <div class="note">Частота берётся из трека, битрейт и дизеринг — из генератора</div>
+    <div class="hint" data-i18n="mixHint"></div>
+    <div class="note" data-i18n="mixNote"></div>
     <div class="stack">
-      <button class="btn-primary" id="mixBtn" type="button" disabled>Наложить шум</button>
-      <button class="btn-secondary hidden" id="cancelBtnMix" type="button">Отменить</button>
+      <button class="btn-primary" id="mixBtn" type="button" disabled data-i18n="mixBtn">Наложить шум</button>
+      <button class="btn-secondary hidden" id="cancelBtnMix" type="button" data-i18n="cancel">Отменить</button>
     </div>
   </aside>
 
   <aside class="panel sidebar hidden" id="labSidebar" role="tabpanel" aria-labelledby="tab-lab">
     <div class="section">
-      <div class="section-label" id="lbl-tool">Инструмент</div>
+      <div class="section-label" id="lbl-tool" data-i18n="tool">Инструмент</div>
       <div class="lab-tools" id="labTools" role="radiogroup" aria-labelledby="lbl-tool">
-        <button class="lab-tool active" data-tool="notch" type="button" role="radio" aria-checked="true">Вырез</button>
-        <button class="lab-tool" data-tool="bin" type="button" role="radio" aria-checked="false">Бинаурал</button>
+        <button class="lab-tool active" data-tool="notch" type="button" role="radio" aria-checked="true" data-i18n="toolNotch">Вырез</button>
+        <button class="lab-tool" data-tool="bin" type="button" role="radio" aria-checked="false" data-i18n="toolBin">Бинаурал</button>
         <button class="lab-tool" data-tool="rot8d" type="button" role="radio" aria-checked="false">8D</button>
-        <button class="lab-tool" data-tool="test" type="button" role="radio" aria-checked="false">Тест</button>
-        <button class="lab-tool" data-tool="live" type="button" role="radio" aria-checked="false">Живой шум</button>
-        <button class="lab-tool" data-tool="curve" type="button" role="radio" aria-checked="false">Кривая</button>
-        <button class="lab-tool" data-tool="signals" type="button" role="radio" aria-checked="false">Сигналы</button>
-        <button class="lab-tool" data-tool="dither" type="button" role="radio" aria-checked="false">Дизеринг</button>
-        <button class="lab-tool" data-tool="calib" type="button" role="radio" aria-checked="false">Калибровка</button>
-        <button class="lab-tool" data-tool="synth" type="button" role="radio" aria-checked="false">Синтез</button>
-        <button class="lab-tool" data-tool="perc" type="button" role="radio" aria-checked="false">Перкуссия</button>
-        <button class="lab-tool accent" data-tool="own" type="button" role="radio" aria-checked="false">Свой звук</button>
+        <button class="lab-tool" data-tool="test" type="button" role="radio" aria-checked="false" data-i18n="toolTest">Тест</button>
+        <button class="lab-tool" data-tool="live" type="button" role="radio" aria-checked="false" data-i18n="toolLive">Живой шум</button>
+        <button class="lab-tool" data-tool="curve" type="button" role="radio" aria-checked="false" data-i18n="toolCurve">Кривая</button>
+        <button class="lab-tool" data-tool="signals" type="button" role="radio" aria-checked="false" data-i18n="toolSignals">Сигналы</button>
+        <button class="lab-tool" data-tool="dither" type="button" role="radio" aria-checked="false" data-i18n="toolDither">Дизеринг</button>
+        <button class="lab-tool" data-tool="calib" type="button" role="radio" aria-checked="false" data-i18n="toolCalib">Калибровка</button>
+        <button class="lab-tool" data-tool="synth" type="button" role="radio" aria-checked="false" data-i18n="toolSynth">Синтез</button>
+        <button class="lab-tool" data-tool="perc" type="button" role="radio" aria-checked="false" data-i18n="toolPerc">Перкуссия</button>
+        <button class="lab-tool accent" data-tool="own" type="button" role="radio" aria-checked="false" data-i18n="toolOwn">Свой звук</button>
       </div>
     </div>
 
     <div class="lab-panel" data-panel="notch">
       <div class="section">
-        <div class="section-label plain">Частота выреза</div>
-        <div class="input-row"><input type="range" class="slider" id="notchFreq" min="100" max="12000" step="1" value="1000" aria-label="Частота выреза"><input type="number" class="num-input" id="notchFreqNum" min="100" max="12000" step="1" value="1000"><span class="unit">Гц</span></div>
+        <div class="section-label plain" data-i18n="notchFreq">Частота выреза</div>
+        <div class="input-row"><input type="range" class="slider" id="notchFreq" min="100" max="12000" step="1" value="1000" data-i18n-aria="notchFreq"><input type="number" class="num-input" id="notchFreqNum" min="100" max="12000" step="1" value="1000"><span class="unit" data-i18n="hz">Гц</span></div>
       </div>
       <div class="section">
-        <div class="section-label plain">Узость выреза</div>
-        <div class="input-row"><input type="range" class="slider" id="notchQ" min="1" max="50" step="0.5" value="8" aria-label="Узость выреза Q"><input type="number" class="num-input" id="notchQNum" min="1" max="50" step="0.5" value="8"><span class="unit">Q</span></div>
+        <div class="section-label plain" data-i18n="notchQ">Узость выреза</div>
+        <div class="input-row"><input type="range" class="slider" id="notchQ" min="1" max="50" step="0.5" value="8" data-i18n-aria="notchQ"><input type="number" class="num-input" id="notchQNum" min="1" max="50" step="0.5" value="8"><span class="unit">Q</span></div>
       </div>
-      <div class="hint">Розовый шум с вырезанной узкой полосой. Применяется в исследованиях маскировки звона: вырез ставят на частоту звона. Чем больше Q, тем уже вырез</div>
-      <div class="hint caution">Исследовательский инструмент, не медицинская процедура. Доказательная база такой маскировки ограничена, частоту звона определяет специалист</div>
+      <div class="hint" data-i18n="notchHint"></div>
+      <div class="hint caution" data-i18n="notchCaution"></div>
       <div class="section">
-        <div class="section-label">Таймер</div>
-        <div class="segmented" id="notchTimer" role="radiogroup" aria-label="Таймер">
-          <button class="seg active" data-min="0" type="button" role="radio" aria-checked="true">Выкл</button>
-          <button class="seg" data-min="5" type="button" role="radio" aria-checked="false">5м</button>
-          <button class="seg" data-min="15" type="button" role="radio" aria-checked="false">15м</button>
-          <button class="seg" data-min="30" type="button" role="radio" aria-checked="false">30м</button>
-          <button class="seg" data-min="60" type="button" role="radio" aria-checked="false">60м</button>
-        </div>
-        <div class="countdown hidden" id="notchCountdown" aria-live="polite">Осталось 0:00</div>
+        <div class="section-label" data-i18n="timer">Таймер</div>
+        <div class="segmented" id="notchTimer" role="radiogroup" data-i18n-aria="timer"></div>
+        <div class="countdown hidden" id="notchCountdown" aria-live="polite"></div>
       </div>
-      <div class="lab-actions"><button class="btn-primary" id="notchPlay" type="button">Включить</button><button class="btn-secondary hidden" id="notchStop" type="button">Остановить</button></div>
+      <div class="lab-actions"><button class="btn-primary" id="notchPlay" type="button" data-i18n="start">Включить</button><button class="btn-secondary hidden" id="notchStop" type="button" data-i18n="stop">Остановить</button></div>
     </div>
 
     <div class="lab-panel hidden" data-panel="bin">
       <div class="section">
-        <div class="section-label plain">Основной тон</div>
-        <div class="input-row"><input type="range" class="slider" id="binBase" min="100" max="500" step="1" value="200" aria-label="Несущая частота"><input type="number" class="num-input" id="binBaseNum" min="100" max="500" step="1" value="200"><span class="unit">Гц</span></div>
+        <div class="section-label plain" data-i18n="binBase">Основной тон</div>
+        <div class="input-row"><input type="range" class="slider" id="binBase" min="100" max="500" step="1" value="200" data-i18n-aria="binBase"><input type="number" class="num-input" id="binBaseNum" min="100" max="500" step="1" value="200"><span class="unit" data-i18n="hz">Гц</span></div>
       </div>
       <div class="section">
-        <div class="section-label plain">Разница между ушами</div>
-        <div class="input-row"><input type="range" class="slider" id="binBeat" min="1" max="20" step="0.5" value="6" aria-label="Разница частот"><input type="number" class="num-input" id="binBeatNum" min="1" max="20" step="0.5" value="6"><span class="unit">Гц</span></div>
+        <div class="section-label plain" data-i18n="binBeat">Разница между ушами</div>
+        <div class="input-row"><input type="range" class="slider" id="binBeat" min="1" max="20" step="0.5" value="6" data-i18n-aria="binBeat"><input type="number" class="num-input" id="binBeatNum" min="1" max="20" step="0.5" value="6"><span class="unit" data-i18n="hz">Гц</span></div>
       </div>
-      <div class="hint">В левое ухо идёт тон, в правое — чуть выше. Разница воспринимается как медленная пульсация. Нужны наушники, фоном идёт тихий розовый шум</div>
-      <div class="hint caution">Привязка «4 Гц сон, 10 Гц фокус» — гипотеза, а не установленный факт: доказательная база слабая и противоречивая</div>
+      <div class="hint" data-i18n="binHint"></div>
+      <div class="hint caution" data-i18n="binCaution"></div>
       <div class="section">
-        <div class="section-label">Таймер</div>
-        <div class="segmented" id="binTimer" role="radiogroup" aria-label="Таймер">
-          <button class="seg active" data-min="0" type="button" role="radio" aria-checked="true">Выкл</button>
-          <button class="seg" data-min="5" type="button" role="radio" aria-checked="false">5м</button>
-          <button class="seg" data-min="15" type="button" role="radio" aria-checked="false">15м</button>
-          <button class="seg" data-min="30" type="button" role="radio" aria-checked="false">30м</button>
-          <button class="seg" data-min="60" type="button" role="radio" aria-checked="false">60м</button>
-        </div>
-        <div class="countdown hidden" id="binCountdown" aria-live="polite">Осталось 0:00</div>
+        <div class="section-label" data-i18n="timer">Таймер</div>
+        <div class="segmented" id="binTimer" role="radiogroup" data-i18n-aria="timer"></div>
+        <div class="countdown hidden" id="binCountdown" aria-live="polite"></div>
       </div>
-      <div class="lab-actions"><button class="btn-primary" id="binPlay" type="button">Включить</button><button class="btn-secondary hidden" id="binStop" type="button">Остановить</button></div>
+      <div class="lab-actions"><button class="btn-primary" id="binPlay" type="button" data-i18n="start">Включить</button><button class="btn-secondary hidden" id="binStop" type="button" data-i18n="stop">Остановить</button></div>
     </div>
 
     <div class="lab-panel hidden" data-panel="rot8d">
       <div class="section">
-        <div class="section-label plain">Скорость вращения</div>
-        <div class="input-row"><input type="range" class="slider" id="rot8dSpeed" min="1" max="20" step="1" value="4" aria-label="Скорость вращения"><input type="number" class="num-input" id="rot8dSpeedNum" min="1" max="20" step="1" value="4"><span class="unit">×</span></div>
+        <div class="section-label plain" data-i18n="rotSpeed">Скорость вращения</div>
+        <div class="input-row"><input type="range" class="slider" id="rot8dSpeed" min="1" max="20" step="1" value="4" data-i18n-aria="rotSpeed"><input type="number" class="num-input" id="rot8dSpeedNum" min="1" max="20" step="1" value="4"><span class="unit">×</span></div>
       </div>
-      <div class="hint">Источник обходит голову по кругу. Позиция задаётся на звуковой частоте, поэтому вращение не замирает, когда вкладка уходит в фон. Нужны наушники</div>
-      <div class="lab-actions"><button class="btn-primary" id="rot8dPlay" type="button">Включить</button><button class="btn-secondary hidden" id="rot8dStop" type="button">Остановить</button></div>
+      <div class="hint" data-i18n="rotHint"></div>
+      <div class="lab-actions"><button class="btn-primary" id="rot8dPlay" type="button" data-i18n="start">Включить</button><button class="btn-secondary hidden" id="rot8dStop" type="button" data-i18n="stop">Остановить</button></div>
     </div>
 
     <div class="lab-panel hidden" data-panel="test">
       <div class="section">
-        <div class="section-label plain">Вид шума</div>
-        <div class="swatches" id="testSwatches" role="radiogroup" aria-label="Вид шума"></div>
+        <div class="section-label plain" data-i18n="noiseKind">Вид шума</div>
+        <div class="swatches" id="testSwatches" role="radiogroup" data-i18n-aria="noiseKind"></div>
       </div>
-      <div class="hint">Все виды выровнены по RMS, переключение идёт кроссфейдом. Слышна разница в тембре, а не в уровне. Численная проверка — на вкладке «Спектр»</div>
-      <div class="lab-actions"><button class="btn-primary" id="testPlay" type="button">Включить</button><button class="btn-secondary hidden" id="testStop" type="button">Остановить</button></div>
+      <div class="hint" data-i18n="testHint"></div>
+      <div class="lab-actions"><button class="btn-primary" id="testPlay" type="button" data-i18n="start">Включить</button><button class="btn-secondary hidden" id="testStop" type="button" data-i18n="stop">Остановить</button></div>
     </div>
 
     <div class="lab-panel hidden" data-panel="live">
       <div class="section">
-        <div class="section-label plain">Вид шума</div>
-        <div class="swatches" id="liveSwatches" role="radiogroup" aria-label="Вид живого шума"></div>
+        <div class="section-label plain" data-i18n="noiseKind">Вид шума</div>
+        <div class="swatches" id="liveSwatches" role="radiogroup" data-i18n-aria="noiseKind"></div>
       </div>
       <div class="knob-row">
-        <div class="knob-cell"><div class="knob-title">Уровень</div><div id="knobLevel"></div></div>
-        <div class="knob-cell"><div class="knob-title">Дрейф</div><div id="knobDrift"></div></div>
-        <div class="knob-cell"><div class="knob-title">Наклон</div><div id="knobTilt"></div></div>
+        <div class="knob-cell"><div class="knob-title" data-i18n="knobLevel">Уровень</div><div id="knobLevel"></div></div>
+        <div class="knob-cell"><div class="knob-title" data-i18n="knobDrift">Дрейф</div><div id="knobDrift"></div></div>
+        <div class="knob-cell"><div class="knob-title" data-i18n="knobTilt">Наклон</div><div id="knobTilt"></div></div>
       </div>
-      <div class="note">Тяните ручку вверх и вниз, крутите колесом или используйте стрелки. Shift — точная подстройка, двойной клик — сброс</div>
+      <div class="note" data-i18n="knobHint"></div>
       <label class="switch-row" for="liveReverbToggle">
         <input type="checkbox" id="liveReverbToggle" class="switch-input">
         <span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span>
-        <span class="switch-text">Пространство<span class="switch-sub">Реверберация поверх бесконечного шума</span></span>
+        <span class="switch-text"><span data-i18n="space">Пространство</span><span class="switch-sub" data-i18n="liveReverbSub"></span></span>
       </label>
       <div class="section" id="liveReverbSection">
-        <select class="select" id="liveReverbPreset" aria-label="Пресет пространства">
-          <option value="room">Комната</option><option value="hall" selected>Зал</option>
-          <option value="opera">Опера</option><option value="cathedral">Собор</option>
-          <option value="parking">Парковка</option><option value="tunnel">Тоннель</option>
-        </select>
+        <select class="select" id="liveReverbPreset" data-i18n-aria="spacePreset"></select>
         <div class="input-row">
-          <input type="range" class="slider" id="liveReverbWet" min="0" max="100" step="1" value="30" aria-label="Доля пространства">
+          <input type="range" class="slider" id="liveReverbWet" min="0" max="100" step="1" value="30" data-i18n-aria="spaceAmount">
           <input type="number" class="num-input" id="liveReverbWetNum" min="0" max="100" step="1" value="30"><span class="unit">%</span>
         </div>
       </div>
       <div class="live-meter">
-        <div class="live-meter-top"><span>Выходной уровень</span><span class="live-meter-val" id="liveMeterVal">—</span></div>
+        <div class="live-meter-top"><span data-i18n="outLevel">Выходной уровень</span><span class="live-meter-val" id="liveMeterVal">—</span></div>
         <div class="live-meter-track"><div class="live-meter-fill" id="liveMeterFill"></div></div>
       </div>
-      <div class="hint">Бесконечный шум без файла и без десятиминутного предела. Дрейф медленно водит срез и громкость, чтобы текстура не была механической</div>
-      <div class="lab-actions"><button class="btn-primary" id="livePlay" type="button">Включить</button><button class="btn-secondary hidden" id="liveStop" type="button">Остановить</button></div>
+      <div class="hint" data-i18n="liveHint"></div>
+      <div class="lab-actions"><button class="btn-primary" id="livePlay" type="button" data-i18n="start">Включить</button><button class="btn-secondary hidden" id="liveStop" type="button" data-i18n="stop">Остановить</button></div>
     </div>
 
     <div class="lab-panel hidden" data-panel="curve">
-      <div class="hint">Рисуйте АЧХ прямо в окне. Оси подписаны: слева низкие частоты, справа высокие, по вертикали усиление в дБ. Фильтр строится по вашему рисунку, поэтому АЧХ совпадает с ним</div>
-      <div class="note" id="curveRange">Диапазон: 20 Гц – 20 кГц</div>
+      <div class="hint" data-i18n="curveHint"></div>
+      <div class="note" id="curveRange"></div>
       <div class="section">
-        <div class="section-label plain">Длительность</div>
-        <div class="input-row"><input type="range" class="slider" id="curveDur" min="5" max="120" step="1" value="20" aria-label="Длительность"><input type="number" class="num-input" id="curveDurNum" min="5" max="120" step="1" value="20"><span class="unit">сек</span></div>
+        <div class="section-label plain" data-i18n="duration">Длительность</div>
+        <div class="input-row"><input type="range" class="slider" id="curveDur" min="5" max="120" step="1" value="20" data-i18n-aria="durationAria"><input type="number" class="num-input" id="curveDurNum" min="5" max="120" step="1" value="20"><span class="unit" data-i18n="sec">сек</span></div>
       </div>
       <div class="section">
-        <div class="section-label plain">Разрешение фильтра</div>
-        <select class="select" id="curveTaps" aria-label="Разрешение фильтра">
-          <option value="2048">2048 отводов</option><option value="4096" selected>4096 отводов</option><option value="8192">8192 отвода · точнее на низах</option>
+        <div class="section-label plain" data-i18n="filterRes">Разрешение фильтра</div>
+        <select class="select" id="curveTaps" data-i18n-aria="filterRes">
+          <option value="2048" data-i18n="taps2048">2048 отводов</option><option value="4096" selected data-i18n="taps4096">4096 отводов</option><option value="8192" data-i18n="taps8192">8192 отвода</option>
         </select>
       </div>
       <div class="stack">
-        <button class="btn-primary" id="curveGen" type="button">Сгенерировать</button>
-        <button class="btn-secondary" id="curveReset" type="button">Сбросить в 0 дБ</button>
-        <button class="btn-secondary hidden" id="cancelBtnCurve" type="button">Отменить</button>
+        <button class="btn-primary" id="curveGen" type="button" data-i18n="generate">Сгенерировать</button>
+        <button class="btn-secondary" id="curveReset" type="button" data-i18n="curveReset">Сбросить в 0 дБ</button>
+        <button class="btn-secondary hidden" id="cancelBtnCurve" type="button" data-i18n="cancel">Отменить</button>
       </div>
     </div>
 
     <div class="lab-panel hidden" data-panel="signals">
       <div class="section">
-        <div class="section-label plain">Сигнал</div>
-        <select class="select" id="signalKind" aria-label="Тестовый сигнал">
-          <option value="sweep" selected>Лог-свип 20 Гц – 20 кГц</option>
-          <option value="steps">Ступенчатые синусы по третьоктавам</option>
-          <option value="tone">Опорный тон 1 кГц</option>
-          <option value="pinkband">Полосовой розовый 500 Гц – 2 кГц</option>
-          <option value="polarity">Тест полярности</option>
-          <option value="channels">Идентификация каналов L / R / оба</option>
-          <option value="phase">Фазовый тест: синфаза и противофаза</option>
-          <option value="isp">Межвыборочный выброс</option>
-          <option value="sur51">Surround 5.1 · независимый шум</option>
-          <option value="sur71">Surround 7.1 · независимый шум</option>
-          <option value="surid">Surround 7.1 · обход каналов</option>
-        </select>
+        <div class="section-label plain" data-i18n="signal">Сигнал</div>
+        <select class="select" id="signalKind" data-i18n-aria="signal"></select>
       </div>
       <div class="section">
-        <div class="section-label plain">Длительность</div>
-        <div class="input-row"><input type="range" class="slider" id="signalDur" min="2" max="60" step="1" value="20" aria-label="Длительность сигнала"><input type="number" class="num-input" id="signalDurNum" min="2" max="60" step="1" value="20"><span class="unit">сек</span></div>
+        <div class="section-label plain" data-i18n="duration">Длительность</div>
+        <div class="input-row"><input type="range" class="slider" id="signalDur" min="2" max="60" step="1" value="20" data-i18n-aria="durationAria"><input type="number" class="num-input" id="signalDurNum" min="2" max="60" step="1" value="20"><span class="unit" data-i18n="sec">сек</span></div>
       </div>
       <div class="section">
-        <div class="section-label plain">Уровень</div>
-        <div class="input-row"><input type="range" class="slider" id="signalLevel" min="-60" max="0" step="1" value="-12" aria-label="Уровень сигнала"><input type="number" class="num-input" id="signalLevelNum" min="-60" max="0" step="1" value="-12"><span class="unit">dBFS</span></div>
-        <div class="note">Уровень задаёт амплитуду (пик). Для синуса RMS окажется на 3 дБ ниже</div>
+        <div class="section-label plain" data-i18n="level">Уровень</div>
+        <div class="input-row"><input type="range" class="slider" id="signalLevel" min="-60" max="0" step="1" value="-12" data-i18n-aria="level"><input type="number" class="num-input" id="signalLevelNum" min="-60" max="0" step="1" value="-12"><span class="unit">dBFS</span></div>
+        <div class="note" data-i18n="signalLevelNote"></div>
       </div>
       <div class="section" id="signalChanSection">
-        <div class="section-label plain">Канал</div>
-        <div class="segmented" id="signalChannel" role="radiogroup" aria-label="Канал">
+        <div class="section-label plain" data-i18n="channel">Канал</div>
+        <div class="segmented" id="signalChannel" role="radiogroup" data-i18n-aria="channel">
           <button class="seg" data-schan="l" type="button" role="radio" aria-checked="false">L</button>
           <button class="seg" data-schan="r" type="button" role="radio" aria-checked="false">R</button>
-          <button class="seg active" data-schan="both" type="button" role="radio" aria-checked="true">Оба</button>
+          <button class="seg active" data-schan="both" type="button" role="radio" aria-checked="true" data-i18n="both">Оба</button>
         </div>
       </div>
       <div class="note" id="signalNote"></div>
-      <div class="stack"><button class="btn-primary" id="signalGen" type="button">Сгенерировать</button><button class="btn-secondary hidden" id="cancelBtnSignal" type="button">Отменить</button></div>
+      <div class="stack"><button class="btn-primary" id="signalGen" type="button" data-i18n="generate">Сгенерировать</button><button class="btn-secondary hidden" id="cancelBtnSignal" type="button" data-i18n="cancel">Отменить</button></div>
     </div>
 
     <div class="lab-panel hidden" data-panel="dither">
-      <div class="hint">Тон 440 Гц на −90 dBFS — около одного младшего разряда 16 бит. Без дизеринга он превращается в ступеньки с гармониками, с дизерингом остаётся чистым на фоне шума</div>
-      <div class="hint">Волна, спектр и измерения считаются уже после квантования, а результат поднят до −3 dBFS, чтобы искажения было видно и слышно</div>
-      <div class="note">Этот тест всегда 16 бит и без повторного дизеринга, настройки генератора на него не влияют</div>
+      <div class="hint" data-i18n="ditherHint1"></div>
+      <div class="hint" data-i18n="ditherHint2"></div>
+      <div class="note" data-i18n="ditherHint3"></div>
       <div class="stack">
-        <button class="btn-secondary" id="ditherNo" type="button">Без дизеринга</button>
-        <button class="btn-secondary" id="ditherYes" type="button">С дизерингом</button>
+        <button class="btn-secondary" id="ditherNo" type="button" data-i18n="ditherOff">Без дизеринга</button>
+        <button class="btn-secondary" id="ditherYes" type="button" data-i18n="ditherOn">С дизерингом</button>
       </div>
     </div>
 
     <div class="lab-panel hidden" data-panel="calib">
-      <div class="hint">Розовый шум на −20 dBFS RMS для выравнивания мониторов. Полоса ограничена 500 Гц – 2 кГц по практике настройки речи, либо во всю полосу</div>
+      <div class="hint" data-i18n="calibHint"></div>
       <div class="section">
-        <div class="section-label plain">Длительность</div>
-        <div class="input-row"><input type="range" class="slider" id="calibDur" min="10" max="120" step="1" value="30" aria-label="Длительность калибровки"><input type="number" class="num-input" id="calibDurNum" min="10" max="120" step="1" value="30"><span class="unit">сек</span></div>
+        <div class="section-label plain" data-i18n="duration">Длительность</div>
+        <div class="input-row"><input type="range" class="slider" id="calibDur" min="10" max="120" step="1" value="30" data-i18n-aria="durationAria"><input type="number" class="num-input" id="calibDurNum" min="10" max="120" step="1" value="30"><span class="unit" data-i18n="sec">сек</span></div>
       </div>
       <div class="section">
-        <div class="section-label plain">Полоса</div>
-        <div class="segmented" id="calibBand" role="radiogroup" aria-label="Полоса">
-          <button class="seg active" data-band="full" type="button" role="radio" aria-checked="true">Полная</button>
+        <div class="section-label plain" data-i18n="band">Полоса</div>
+        <div class="segmented" id="calibBand" role="radiogroup" data-i18n-aria="band">
+          <button class="seg active" data-band="full" type="button" role="radio" aria-checked="true" data-i18n="bandFull">Полная</button>
           <button class="seg" data-band="speech" type="button" role="radio" aria-checked="false">500–2k</button>
         </div>
       </div>
       <div class="section">
-        <div class="section-label plain">Канал</div>
-        <div class="segmented" id="calibChannel" role="radiogroup" aria-label="Канал калибровки">
+        <div class="section-label plain" data-i18n="channel">Канал</div>
+        <div class="segmented" id="calibChannel" role="radiogroup" data-i18n-aria="channel">
           <button class="seg" data-cchan="l" type="button" role="radio" aria-checked="false">L</button>
           <button class="seg" data-cchan="r" type="button" role="radio" aria-checked="false">R</button>
-          <button class="seg active" data-cchan="both" type="button" role="radio" aria-checked="true">Оба</button>
+          <button class="seg active" data-cchan="both" type="button" role="radio" aria-checked="true" data-i18n="both">Оба</button>
         </div>
       </div>
-      <div class="note">Всегда WAV 16 бит с дизерингом и всегда −20 dBFS RMS в активном канале</div>
-      <div class="stack"><button class="btn-primary" id="calibBtn" type="button">Сгенерировать −20 dBFS</button><button class="btn-secondary hidden" id="cancelBtnCalib" type="button">Отменить</button></div>
+      <div class="note" data-i18n="calibNote"></div>
+      <div class="stack"><button class="btn-primary" id="calibBtn" type="button" data-i18n="calibBtn">Сгенерировать −20 dBFS</button><button class="btn-secondary hidden" id="cancelBtnCalib" type="button" data-i18n="cancel">Отменить</button></div>
     </div>
 
     <div class="lab-panel hidden" data-panel="synth">
       <div class="section">
-        <div class="section-label plain">Текстура</div>
-        <div class="segmented" id="synthType" role="radiogroup" aria-label="Текстура">
-          <button class="seg active" data-synth="wind" type="button" role="radio" aria-checked="true">Ветер</button>
-          <button class="seg" data-synth="rain" type="button" role="radio" aria-checked="false">Дождь</button>
-          <button class="seg" data-synth="surf" type="button" role="radio" aria-checked="false">Прибой</button>
+        <div class="section-label plain" data-i18n="texture">Текстура</div>
+        <div class="segmented" id="synthType" role="radiogroup" data-i18n-aria="texture">
+          <button class="seg active" data-synth="wind" type="button" role="radio" aria-checked="true" data-i18n="wind">Ветер</button>
+          <button class="seg" data-synth="rain" type="button" role="radio" aria-checked="false" data-i18n="rain">Дождь</button>
+          <button class="seg" data-synth="surf" type="button" role="radio" aria-checked="false" data-i18n="surf">Прибой</button>
         </div>
       </div>
       <div class="section">
-        <div class="section-label plain">Длительность</div>
-        <div class="input-row"><input type="range" class="slider" id="synthDur" min="5" max="600" step="1" value="30" aria-label="Длительность синтеза"><input type="number" class="num-input" id="synthDurNum" min="5" max="600" step="1" value="30"><span class="unit">сек</span></div>
+        <div class="section-label plain" data-i18n="duration">Длительность</div>
+        <div class="input-row"><input type="range" class="slider" id="synthDur" min="5" max="600" step="1" value="30" data-i18n-aria="durationAria"><input type="number" class="num-input" id="synthDurNum" min="5" max="600" step="1" value="30"><span class="unit" data-i18n="sec">сек</span></div>
       </div>
       <div class="section">
-        <div class="section-label plain">Наклон источника α</div>
-        <div class="input-row"><input type="range" class="slider" id="synthAlpha" min="-1" max="2.5" step="0.05" value="0.6" aria-label="Наклон источника"><input type="number" class="num-input" id="synthAlphaNum" min="-1" max="2.5" step="0.05" value="0.6"></div>
+        <div class="section-label plain" data-i18n="synthAlpha">Наклон источника α</div>
+        <div class="input-row"><input type="range" class="slider" id="synthAlpha" min="-1" max="2.5" step="0.05" value="0.6" data-i18n-aria="synthAlpha"><input type="number" class="num-input" id="synthAlphaNum" min="-1" max="2.5" step="0.05" value="0.6"></div>
       </div>
       <div class="section">
-        <div class="section-label plain">Медленный дрейф</div>
-        <div class="input-row"><input type="range" class="slider" id="synthDrift" min="0" max="100" step="1" value="35" aria-label="Дрейф параметров"><input type="number" class="num-input" id="synthDriftNum" min="0" max="100" step="1" value="35"><span class="unit">%</span></div>
+        <div class="section-label plain" data-i18n="slowDrift">Медленный дрейф</div>
+        <div class="input-row"><input type="range" class="slider" id="synthDrift" min="0" max="100" step="1" value="35" data-i18n-aria="slowDrift"><input type="number" class="num-input" id="synthDriftNum" min="0" max="100" step="1" value="35"><span class="unit">%</span></div>
       </div>
-      <div class="hint">Ветер — низкий гул с порывами, дождь — высокий шелест, прибой — медленные накаты. Дрейф добавляет случайное блуждание среза и громкости</div>
-      <div class="stack"><button class="btn-primary" id="synthBtn" type="button">Сгенерировать</button><button class="btn-secondary hidden" id="cancelBtnSynth" type="button">Отменить</button></div>
+      <div class="hint" data-i18n="synthHint"></div>
+      <div class="stack"><button class="btn-primary" id="synthBtn" type="button" data-i18n="generate">Сгенерировать</button><button class="btn-secondary hidden" id="cancelBtnSynth" type="button" data-i18n="cancel">Отменить</button></div>
     </div>
 
     <div class="lab-panel hidden" data-panel="perc">
       <div class="section">
-        <div class="section-label plain">Удар</div>
-        <div class="segmented" id="percType" role="radiogroup" aria-label="Удар">
-          <button class="seg active" data-perc="snare" type="button" role="radio" aria-checked="true">Барабан</button>
-          <button class="seg" data-perc="hat" type="button" role="radio" aria-checked="false">Тарелка</button>
-          <button class="seg" data-perc="kick" type="button" role="radio" aria-checked="false">Бочка</button>
+        <div class="section-label plain" data-i18n="hit">Удар</div>
+        <div class="segmented" id="percType" role="radiogroup" data-i18n-aria="hit">
+          <button class="seg active" data-perc="snare" type="button" role="radio" aria-checked="true" data-i18n="snare">Барабан</button>
+          <button class="seg" data-perc="hat" type="button" role="radio" aria-checked="false" data-i18n="hat">Тарелка</button>
+          <button class="seg" data-perc="kick" type="button" role="radio" aria-checked="false" data-i18n="kick">Бочка</button>
         </div>
       </div>
-      <div class="hint">Барабан — хлопок с коротким тоном, тарелка — металлический шелест, бочка — низкий удар с падающей высотой. Каждый удар собирается из своего seed</div>
-      <div class="stack"><button class="btn-primary" id="percBtn" type="button">Сгенерировать</button></div>
+      <div class="hint" data-i18n="percHint"></div>
+      <div class="stack"><button class="btn-primary" id="percBtn" type="button" data-i18n="generate">Сгенерировать</button></div>
     </div>
 
     <div class="lab-panel hidden" data-panel="own">
-      <div class="hint">Запишите фон помещения до 10 минут или загрузите готовый файл. Дальше его можно оставить как есть, превратить в стационарный шум с тем же спектром или в живую гранулярную текстуру</div>
+      <div class="hint" data-i18n="ownHint"></div>
       <div class="rec-row">
-        <button class="rec-btn" id="ownRec" type="button"><span class="rec-dot" aria-hidden="true"></span><span id="ownRecLabel">Записать</span></button>
+        <button class="rec-btn" id="ownRec" type="button"><span class="rec-dot" aria-hidden="true"></span><span id="ownRecLabel"></span></button>
         <div class="rec-time" id="ownTime">0:00 / 10:00</div>
       </div>
       <div class="live-meter">
-        <div class="live-meter-top"><span>Уровень входа</span><span class="live-meter-val" id="ownMeterVal">—</span></div>
+        <div class="live-meter-top"><span data-i18n="inLevel">Уровень входа</span><span class="live-meter-val" id="ownMeterVal">—</span></div>
         <div class="live-meter-track"><div class="live-meter-fill" id="ownMeterFill"></div></div>
       </div>
       <label class="upload-mini" for="ownFile">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
-        <span id="ownFileName">или загрузить файл</span>
+        <span id="ownFileName"></span>
         <input type="file" id="ownFile" accept="audio/*" class="sr-file">
       </label>
-      <div class="note" id="ownInfo">Источник не выбран</div>
-      <div class="hint caution">Запись живёт только в памяти вкладки и никуда не отправляется. После перезагрузки страницы её нужно сделать заново</div>
+      <div class="note" id="ownInfo"></div>
+      <div class="hint caution" data-i18n="ownPrivacy"></div>
 
       <div class="section">
-        <div class="section-label plain">Что сделать</div>
-        <select class="select" id="ownMode" aria-label="Режим преобразования">
-          <option value="asis" selected>Оставить как есть</option>
-          <option value="match">Стационарный шум по спектру</option>
-          <option value="granular">Гранулярная текстура</option>
+        <div class="section-label plain" data-i18n="ownWhat">Что сделать</div>
+        <select class="select" id="ownMode" data-i18n-aria="ownWhat">
+          <option value="asis" selected data-i18n="ownAsis">Оставить как есть</option>
+          <option value="match" data-i18n="ownMatch">Стационарный шум по спектру</option>
+          <option value="granular" data-i18n="ownGranular">Гранулярная текстура</option>
         </select>
-        <div class="note" id="ownModeNote">Исходная запись без изменений, доступны только огибающая и пространство</div>
+        <div class="note" id="ownModeNote"></div>
       </div>
 
       <div class="section hidden" id="ownSynthDurSection">
-        <div class="section-label plain">Длительность результата</div>
-        <div class="input-row"><input type="range" class="slider" id="ownDur" min="5" max="600" step="1" value="60" aria-label="Длительность результата"><input type="number" class="num-input" id="ownDurNum" min="5" max="600" step="1" value="60"><span class="unit">сек</span></div>
+        <div class="section-label plain" data-i18n="resultDuration">Длительность результата</div>
+        <div class="input-row"><input type="range" class="slider" id="ownDur" min="5" max="600" step="1" value="60" data-i18n-aria="resultDuration"><input type="number" class="num-input" id="ownDurNum" min="5" max="600" step="1" value="60"><span class="unit" data-i18n="sec">сек</span></div>
       </div>
       <div class="section hidden" id="ownGrainSection">
-        <div class="section-label plain">Размер зерна</div>
-        <div class="input-row"><input type="range" class="slider" id="ownGrain" min="20" max="400" step="5" value="90" aria-label="Размер зерна, миллисекунды"><input type="number" class="num-input" id="ownGrainNum" min="20" max="400" step="5" value="90"><span class="unit">мс</span></div>
+        <div class="section-label plain" data-i18n="grainSize">Размер зерна</div>
+        <div class="input-row"><input type="range" class="slider" id="ownGrain" min="20" max="400" step="5" value="90" data-i18n-aria="grainSize"><input type="number" class="num-input" id="ownGrainNum" min="20" max="400" step="5" value="90"><span class="unit" data-i18n="ms">мс</span></div>
       </div>
       <div class="section hidden" id="ownTapsSection">
-        <div class="section-label plain">Разрешение фильтра</div>
-        <select class="select" id="ownTaps" aria-label="Разрешение фильтра">
-          <option value="2048">2048 отводов</option><option value="4096" selected>4096 отводов</option><option value="8192">8192 отвода</option>
+        <div class="section-label plain" data-i18n="filterRes">Разрешение фильтра</div>
+        <select class="select" id="ownTaps" data-i18n-aria="filterRes">
+          <option value="2048" data-i18n="taps2048">2048 отводов</option><option value="4096" selected data-i18n="taps4096">4096 отводов</option><option value="8192" data-i18n="taps8192">8192 отвода</option>
         </select>
       </div>
 
-      <div class="subhead">Огибающая</div>
       <div class="section">
-        <div class="section-label plain">Fade in</div>
-        <div class="input-row"><input type="range" class="slider" id="ownFadeIn" min="0" max="30" step="0.5" value="0" aria-label="Fade in"><input type="number" class="num-input" id="ownFadeInNum" min="0" max="30" step="0.5" value="0"><span class="unit">сек</span></div>
+        <div class="section-label plain" data-i18n="fadeIn">Fade in</div>
+        <div class="input-row"><input type="range" class="slider" id="ownFadeIn" min="0" max="30" step="0.5" value="0" data-i18n-aria="fadeIn"><input type="number" class="num-input" id="ownFadeInNum" min="0" max="30" step="0.5" value="0"><span class="unit" data-i18n="sec">сек</span></div>
       </div>
       <div class="section">
-        <div class="section-label plain">Fade out</div>
-        <div class="input-row"><input type="range" class="slider" id="ownFadeOut" min="0" max="30" step="0.5" value="0" aria-label="Fade out"><input type="number" class="num-input" id="ownFadeOutNum" min="0" max="30" step="0.5" value="0"><span class="unit">сек</span></div>
+        <div class="section-label plain" data-i18n="fadeOut">Fade out</div>
+        <div class="input-row"><input type="range" class="slider" id="ownFadeOut" min="0" max="30" step="0.5" value="0" data-i18n-aria="fadeOut"><input type="number" class="num-input" id="ownFadeOutNum" min="0" max="30" step="0.5" value="0"><span class="unit" data-i18n="sec">сек</span></div>
       </div>
       <div class="section">
-        <div class="section-label plain">Тишина в начале</div>
-        <div class="input-row"><input type="range" class="slider" id="ownPadA" min="0" max="30" step="0.5" value="0" aria-label="Тишина в начале"><input type="number" class="num-input" id="ownPadANum" min="0" max="30" step="0.5" value="0"><span class="unit">сек</span></div>
+        <div class="section-label plain" data-i18n="padStart">Тишина в начале</div>
+        <div class="input-row"><input type="range" class="slider" id="ownPadA" min="0" max="30" step="0.5" value="0" data-i18n-aria="padStart"><input type="number" class="num-input" id="ownPadANum" min="0" max="30" step="0.5" value="0"><span class="unit" data-i18n="sec">сек</span></div>
       </div>
       <div class="section">
-        <div class="section-label plain">Тишина в конце</div>
-        <div class="input-row"><input type="range" class="slider" id="ownPadB" min="0" max="30" step="0.5" value="0" aria-label="Тишина в конце"><input type="number" class="num-input" id="ownPadBNum" min="0" max="30" step="0.5" value="0"><span class="unit">сек</span></div>
+        <div class="section-label plain" data-i18n="padEnd">Тишина в конце</div>
+        <div class="input-row"><input type="range" class="slider" id="ownPadB" min="0" max="30" step="0.5" value="0" data-i18n-aria="padEnd"><input type="number" class="num-input" id="ownPadBNum" min="0" max="30" step="0.5" value="0"><span class="unit" data-i18n="sec">сек</span></div>
       </div>
       <div class="section">
-        <div class="section-label plain">Наклон α</div>
-        <div class="input-row"><input type="range" class="slider" id="ownTilt" min="-2" max="2" step="0.05" value="0" aria-label="Наклон"><input type="number" class="num-input" id="ownTiltNum" min="-2" max="2" step="0.05" value="0"></div>
+        <div class="section-label plain" data-i18n="tiltShort">Наклон α</div>
+        <div class="input-row"><input type="range" class="slider" id="ownTilt" min="-2" max="2" step="0.05" value="0" data-i18n-aria="tiltShort"><input type="number" class="num-input" id="ownTiltNum" min="-2" max="2" step="0.05" value="0"></div>
       </div>
 
-      <div class="subhead">Уровень</div>
+      <div class="subhead" data-i18n="level">Уровень</div>
       <div class="section">
-        <select class="select" id="ownNorm" aria-label="Нормализация">
-          <option value="none">Без нормализации</option>
-          <option value="peak">По пиковому уровню</option>
-          <option value="truepeak" selected>По истинному пику</option>
-          <option value="rms">По RMS</option>
-          <option value="lufs">По громкости LUFS</option>
+        <select class="select" id="ownNorm" data-i18n-aria="normalization">
+          <option value="none" data-i18n="normNone">Без нормализации</option>
+          <option value="peak" data-i18n="normPeak">По пиковому уровню</option>
+          <option value="truepeak" selected data-i18n="normTrue">По истинному пику</option>
+          <option value="rms" data-i18n="normRms">По RMS</option>
+          <option value="lufs" data-i18n="normLufs">По громкости LUFS</option>
         </select>
-        <div class="input-row"><input type="range" class="slider" id="ownTarget" min="-40" max="0" step="0.5" value="-1" aria-label="Целевой уровень"><input type="number" class="num-input" id="ownTargetNum" min="-40" max="0" step="0.5" value="-1"><span class="unit" id="ownTargetUnit">dBTP</span></div>
+        <div class="input-row"><input type="range" class="slider" id="ownTarget" min="-40" max="0" step="0.5" value="-1" data-i18n-aria="targetLevel"><input type="number" class="num-input" id="ownTargetNum" min="-40" max="0" step="0.5" value="-1"><span class="unit" id="ownTargetUnit">dBTP</span></div>
       </div>
 
-      <div class="subhead">Пространство</div>
+      <div class="subhead" data-i18n="space">Пространство</div>
       <label class="switch-row" for="ownReverb">
         <input type="checkbox" id="ownReverb" class="switch-input">
         <span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span>
-        <span class="switch-text">Реверберация<span class="switch-sub">Добавить помещению ещё одно помещение</span></span>
+        <span class="switch-text"><span data-i18n="reverbTitle">Реверберация</span><span class="switch-sub" data-i18n="ownReverbSub"></span></span>
       </label>
       <div class="section" id="ownReverbSection">
-        <select class="select" id="ownReverbPreset" aria-label="Пресет пространства">
-          <option value="room">Комната</option><option value="hall" selected>Зал</option>
-          <option value="opera">Опера</option><option value="cathedral">Собор</option>
-          <option value="parking">Парковка</option><option value="tunnel">Тоннель</option>
-        </select>
-        <div class="input-row"><input type="range" class="slider" id="ownWet" min="0" max="100" step="1" value="30" aria-label="Доля пространства"><input type="number" class="num-input" id="ownWetNum" min="0" max="100" step="1" value="30"><span class="unit">%</span></div>
+        <select class="select" id="ownReverbPreset" data-i18n-aria="spacePreset"></select>
+        <div class="input-row"><input type="range" class="slider" id="ownWet" min="0" max="100" step="1" value="30" data-i18n-aria="spaceAmount"><input type="number" class="num-input" id="ownWetNum" min="0" max="100" step="1" value="30"><span class="unit">%</span></div>
       </div>
       <label class="switch-row" for="ownLoop">
         <input type="checkbox" id="ownLoop" class="switch-input">
         <span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span>
-        <span class="switch-text">Повторять<span class="switch-sub">Замкнуть результат в бесшовную петлю. Доступно для шума и текстуры</span></span>
+        <span class="switch-text"><span data-i18n="loopTitle">Повторять</span><span class="switch-sub" data-i18n="ownLoopSub"></span></span>
       </label>
 
       <div class="stack">
-        <button class="btn-primary" id="ownGen" type="button" disabled>Сгенерировать</button>
-        <button class="btn-secondary hidden" id="ownCancel" type="button">Отменить</button>
-        <button class="btn-secondary" id="ownWav" type="button" disabled>Скачать WAV</button>
-        <button class="btn-secondary" id="ownMp3" type="button" disabled>Скачать MP3</button>
+        <button class="btn-primary" id="ownGen" type="button" disabled data-i18n="generate">Сгенерировать</button>
+        <button class="btn-secondary hidden" id="ownCancel" type="button" data-i18n="cancel">Отменить</button>
+        <button class="btn-secondary" id="ownWav" type="button" disabled data-i18n="dlWav">Скачать WAV</button>
+        <button class="btn-secondary" id="ownMp3" type="button" disabled data-i18n="dlMp3">Скачать MP3</button>
       </div>
-      <div class="note">Формат и битрейт берутся из плеера внизу. Многоканальные результаты сохраняются только в WAV</div>
+      <div class="note" data-i18n="ownFormatNote"></div>
     </div>
   </aside>
 
-  <section class="panel stage" aria-label="Результат и измерения">
+  <section class="panel stage" data-i18n-aria="stageAria">
     <div class="stage-header">
-      <div class="stage-label" id="stageLabel">Визуализация</div>
-      <div class="view-toggle" id="viewToggle" role="tablist" aria-label="Вид анализа">
-        <button class="view-btn active" data-view="wave" type="button" role="tab" aria-selected="true">Волна</button>
-        <button class="view-btn" data-view="spectro" type="button" role="tab" aria-selected="false">Спектрограмма</button>
-        <button class="view-btn" data-view="welch" type="button" role="tab" aria-selected="false">Спектр</button>
+      <div class="stage-label" id="stageLabel"></div>
+      <div class="view-toggle" id="viewToggle" role="tablist" data-i18n-aria="viewAria">
+        <button class="view-btn active" data-view="wave" type="button" role="tab" aria-selected="true" data-i18n="viewWave">Волна</button>
+        <button class="view-btn" data-view="spectro" type="button" role="tab" aria-selected="false" data-i18n="viewSpectro">Спектрограмма</button>
+        <button class="view-btn" data-view="welch" type="button" role="tab" aria-selected="false" data-i18n="viewWelch">Спектр</button>
         <button class="view-btn" data-view="ltas" type="button" role="tab" aria-selected="false">LTAS</button>
-        <button class="view-btn" data-view="hist" type="button" role="tab" aria-selected="false">Гистограмма</button>
-        <button class="view-btn" data-view="loud" type="button" role="tab" aria-selected="false">Громкость</button>
-        <button class="view-btn hidden" data-view="curve" id="viewCurveBtn" type="button" role="tab" aria-selected="false">Кривая</button>
+        <button class="view-btn" data-view="hist" type="button" role="tab" aria-selected="false" data-i18n="viewHist">Гистограмма</button>
+        <button class="view-btn" data-view="loud" type="button" role="tab" aria-selected="false" data-i18n="viewLoud">Громкость</button>
+        <button class="view-btn hidden" data-view="curve" id="viewCurveBtn" type="button" role="tab" aria-selected="false" data-i18n="toolCurve">Кривая</button>
       </div>
       <div class="stage-meta" id="stageMeta">— · —</div>
     </div>
 
     <div class="visualizer" id="visualizer">
-      <canvas id="waveform" role="img" aria-label="Форма волны"></canvas>
-      <canvas id="spectroCanvas" class="hidden" role="img" aria-label="Спектрограмма"></canvas>
-      <canvas id="welchCanvas" class="hidden" role="img" aria-label="Усреднённый спектр"></canvas>
-      <canvas id="histCanvas" class="hidden" role="img" aria-label="Гистограмма амплитуд"></canvas>
-      <canvas id="loudCanvas" class="hidden" role="img" aria-label="Громкость по времени"></canvas>
-      <div class="ltas-wrap hidden" id="ltasWrap" tabindex="0" aria-label="Таблица третьоктавных уровней"></div>
-      <canvas id="curveCanvas" class="hidden" aria-label="Редактор АЧХ" role="application"></canvas>
+      <canvas id="waveform" role="img" data-i18n-aria="waveAria"></canvas>
+      <canvas id="spectroCanvas" class="hidden" role="img" data-i18n-aria="viewSpectro"></canvas>
+      <canvas id="welchCanvas" class="hidden" role="img" data-i18n-aria="viewWelch"></canvas>
+      <canvas id="histCanvas" class="hidden" role="img" data-i18n-aria="viewHist"></canvas>
+      <canvas id="loudCanvas" class="hidden" role="img" data-i18n-aria="viewLoud"></canvas>
+      <div class="ltas-wrap hidden" id="ltasWrap" tabindex="0" data-i18n-aria="ltasAria"></div>
+      <canvas id="curveCanvas" class="hidden" role="application" data-i18n-aria="curveAria"></canvas>
       <div class="cursor-read hidden" id="cursorRead"></div>
       <div class="empty-state" id="emptyState">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M2 12h2.5M7 6v12M11.5 3v18M16 8v8M20.5 10v4"/></svg>
-        <div>Сгенерируйте шум, наложите его на трек или выберите инструмент</div>
+        <div data-i18n="emptyText"></div>
       </div>
     </div>
 
     <div class="plot-controls hidden" id="waveControls">
-      <button class="mini-btn" id="waveZoomIn" type="button">Приблизить</button>
-      <button class="mini-btn" id="waveZoomOut" type="button">Отдалить</button>
-      <button class="mini-btn" id="waveFit" type="button">Вся волна</button>
-      <button class="mini-btn" id="waveSelClear" type="button">Сбросить выделение</button>
-      <span class="pc-grow" id="waveInfo">Перетаскивание — выделение · колесо — зум · Shift+перетаскивание — сдвиг · двойной клик — вся волна</span>
+      <button class="mini-btn" id="waveZoomIn" type="button" data-i18n="zoomIn">Приблизить</button>
+      <button class="mini-btn" id="waveZoomOut" type="button" data-i18n="zoomOut">Отдалить</button>
+      <button class="mini-btn" id="waveFit" type="button" data-i18n="zoomFit">Вся волна</button>
+      <button class="mini-btn" id="waveSelClear" type="button" data-i18n="selClear">Сбросить выделение</button>
+      <span class="pc-grow" id="waveInfo"></span>
     </div>
 
     <div class="plot-controls hidden" id="plotControls">
-      <label class="pc-field">Окно анализа<select class="select compact" id="fftSize" aria-label="Размер окна анализа"><option value="2048">2048</option><option value="4096">4096</option><option value="8192" selected>8192</option><option value="16384">16384</option></select></label>
-      <label class="pc-field">Окно<select class="select compact" id="fftWindow" aria-label="Весовое окно"><option value="hann" selected>Ханна</option><option value="hamming">Хэмминга</option><option value="blackman">Блэкмана</option><option value="rect">Прямоуг.</option></select></label>
-      <label class="pc-field">Шкала<select class="select compact" id="freqScale" aria-label="Шкала частот"><option value="log" selected>log</option><option value="lin">лин</option></select></label>
-      <label class="pc-field">Верх <span id="specTopVal">−20</span><input type="range" class="slider pc-range" id="specTop" min="-90" max="0" step="1" value="-20" aria-label="Верх шкалы dBFS"></label>
-      <label class="pc-field">Диапазон <span id="specRangeVal">80</span><input type="range" class="slider pc-range" id="specRange" min="30" max="120" step="1" value="80" aria-label="Динамический диапазон"></label>
-      <button class="mini-btn" id="reanalyzeBtn" type="button">Пересчитать</button>
-      <span class="legend" id="specLegend"><i>тише</i><span class="legend-bar" aria-hidden="true"></span><i>громче</i></span>
+      <label class="pc-field"><span data-i18n="analysisWindow">Окно анализа</span><select class="select compact" id="fftSize" data-i18n-aria="analysisWindow"><option value="2048">2048</option><option value="4096">4096</option><option value="8192" selected>8192</option><option value="16384">16384</option></select></label>
+      <label class="pc-field"><span data-i18n="windowFn">Окно</span><select class="select compact" id="fftWindow" data-i18n-aria="windowFn"><option value="hann" selected data-i18n="winHann">Ханна</option><option value="hamming" data-i18n="winHamming">Хэмминга</option><option value="blackman" data-i18n="winBlackman">Блэкмана</option><option value="rect" data-i18n="winRect">Прямоуг.</option></select></label>
+      <label class="pc-field"><span data-i18n="scale">Шкала</span><select class="select compact" id="freqScale" data-i18n-aria="scale"><option value="log" selected>log</option><option value="lin" data-i18n="lin">лин</option></select></label>
+      <label class="pc-field"><span data-i18n="top">Верх</span> <span id="specTopVal">−20</span><input type="range" class="slider pc-range" id="specTop" min="-90" max="0" step="1" value="-20" data-i18n-aria="topAria"></label>
+      <label class="pc-field"><span data-i18n="range">Диапазон</span> <span id="specRangeVal">80</span><input type="range" class="slider pc-range" id="specRange" min="30" max="120" step="1" value="80" data-i18n-aria="rangeAria"></label>
+      <button class="mini-btn" id="reanalyzeBtn" type="button" data-i18n="recalc">Пересчитать</button>
+      <span class="legend" id="specLegend"><i data-i18n="quieter">тише</i><span class="legend-bar" aria-hidden="true"></span><i data-i18n="louder">громче</i></span>
     </div>
 
     <div class="plot-controls hidden" id="welchControls">
       <span class="pc-field" id="welchSummary">—</span>
-      <button class="mini-btn" id="welchCsv" type="button">Скачать спектр CSV</button>
+      <button class="mini-btn" id="welchCsv" type="button" data-i18n="welchCsv">Скачать спектр CSV</button>
     </div>
 
     <div class="plot-controls hidden" id="ltasControls">
       <span class="pc-field" id="ltasSummary">—</span>
-      <button class="mini-btn" id="ltasCsv" type="button">Скачать LTAS CSV</button>
+      <button class="mini-btn" id="ltasCsv" type="button" data-i18n="ltasCsv">Скачать LTAS CSV</button>
     </div>
 
-    <div class="meters hidden" id="meters" aria-label="Измеритель громкости">
-      <div class="meter" data-k="m"><div class="meter-top"><span>M 400 мс</span><span class="meter-val" id="mM">—</span></div><div class="meter-track"><div class="meter-fill" id="fM"></div></div></div>
-      <div class="meter" data-k="s"><div class="meter-top"><span>S 3 с</span><span class="meter-val" id="mS">—</span></div><div class="meter-track"><div class="meter-fill" id="fS"></div></div></div>
-      <div class="meter" data-k="i"><div class="meter-top"><span>I интегр.</span><span class="meter-val" id="mI">—</span></div><div class="meter-track"><div class="meter-fill" id="fI"></div></div></div>
+    <div class="meters hidden" id="meters" data-i18n-aria="metersAria">
+      <div class="meter" data-k="m"><div class="meter-top"><span data-i18n="meterM">M 400 мс</span><span class="meter-val" id="mM">—</span></div><div class="meter-track"><div class="meter-fill" id="fM"></div></div></div>
+      <div class="meter" data-k="s"><div class="meter-top"><span data-i18n="meterS">S 3 с</span><span class="meter-val" id="mS">—</span></div><div class="meter-track"><div class="meter-fill" id="fS"></div></div></div>
+      <div class="meter" data-k="i"><div class="meter-top"><span data-i18n="meterI">I интегр.</span><span class="meter-val" id="mI">—</span></div><div class="meter-track"><div class="meter-fill" id="fI"></div></div></div>
       <div class="meter" data-k="lra"><div class="meter-top"><span>LRA</span><span class="meter-val" id="mLRA">—</span></div><div class="meter-track"><div class="meter-fill" id="fLRA"></div></div></div>
-      <div class="meter" data-k="tp"><div class="meter-top"><span>Истинный пик</span><span class="meter-val" id="mTP">—</span></div><div class="meter-track"><div class="meter-fill" id="fTP"></div></div></div>
+      <div class="meter" data-k="tp"><div class="meter-top"><span data-i18n="truePeak">Истинный пик</span><span class="meter-val" id="mTP">—</span></div><div class="meter-track"><div class="meter-fill" id="fTP"></div></div></div>
     </div>
 
     <div class="analysis hidden" id="analysis"></div>
@@ -645,25 +629,25 @@
       <div class="progress-head">
         <div class="progress-track" id="progressTrack"><div class="progress-fill" id="progressFill"></div><div class="progress-square" id="progressSquare"></div></div>
       </div>
-      <div class="progress-info"><span id="progressLabel" aria-live="polite">Готов к работе</span><span id="progressPercent">0%</span></div>
+      <div class="progress-info"><span id="progressLabel" aria-live="polite"></span><span id="progressPercent">0%</span></div>
     </div>
 
-    <div class="seek-row"><input type="range" class="seek" id="seekBar" min="0" max="1000" step="1" value="0" aria-label="Позиция воспроизведения" disabled></div>
+    <div class="seek-row"><input type="range" class="seek" id="seekBar" min="0" max="1000" step="1" value="0" data-i18n-aria="seekAria" disabled></div>
 
     <div class="player">
-      <button class="play-btn" id="playBtn" type="button" aria-label="Воспроизвести" title="Пробел" disabled><svg id="playIcon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg></button>
+      <button class="play-btn" id="playBtn" type="button" data-i18n-title="playTitle" disabled><svg id="playIcon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg></button>
       <div class="time" id="timeDisplay">0:00 / 0:00</div>
-      <button class="icon-btn" id="loopBtn" type="button" aria-label="Повторять" aria-pressed="false" title="Повторять"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg></button>
+      <button class="icon-btn" id="loopBtn" type="button" aria-pressed="false" data-i18n-title="loopTitle" data-i18n-aria="loopTitle"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg></button>
       <div class="vol-wrap">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/></svg>
-        <input type="range" class="vol" id="volume" min="0" max="100" step="1" value="80" aria-label="Громкость">
+        <input type="range" class="vol" id="volume" min="0" max="100" step="1" value="80" data-i18n-aria="volume">
         <span class="vol-num" id="volNum">80%</span>
       </div>
       <div class="player-spacer"></div>
       <div class="dl-group">
-        <select class="select compact" id="dlBitDepth" aria-label="Битрейт скачивания"><option value="16">16 бит</option><option value="24" selected>24 бит</option><option value="32">32 бит</option></select>
+        <select class="select compact" id="dlBitDepth" data-i18n-aria="dlBitDepth"><option value="16" data-i18n="bit16">16 бит</option><option value="24" selected data-i18n="bit24">24 бит</option><option value="32" data-i18n="bit32">32 бит</option></select>
         <button class="btn-secondary" id="dlWavBtn" type="button" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg><span>WAV</span></button>
-        <select class="select compact" id="mp3Rate" aria-label="Битрейт MP3"><option value="128">128 кбит</option><option value="192" selected>192 кбит</option><option value="256">256 кбит</option><option value="320">320 кбит</option></select>
+        <select class="select compact" id="mp3Rate" data-i18n-aria="mp3Bitrate"><option value="128" data-i18n="kbps128">128 кбит</option><option value="192" selected data-i18n="kbps192">192 кбит</option><option value="256" data-i18n="kbps256">256 кбит</option><option value="320" data-i18n="kbps320">320 кбит</option></select>
         <button class="btn-secondary" id="dlMp3Btn" type="button" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg><span>MP3</span></button>
       </div>
     </div>
