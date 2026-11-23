@@ -60,14 +60,19 @@ parking: { size: 0.82, damp: 0.63, pre: 0.014, width: 0.80, dryK: 0.60, wetK: 0.
 tunnel: { size: 0.90, damp: 0.46, pre: 0.050, width: 0.65, dryK: 0.50, wetK: 0.46 }
 }[key] || { size: 0.78, damp: 0.34, pre: 0.020, width: 0.90, dryK: 0.55, wetK: 0.42 };
 const sc = sr / 44100;
-const fb = 0.30 + P.size * 0.66;
-const damp = clamp(P.damp, 0, 0.9) * 0.45;
+const fb = clamp(0.30 + P.size * 0.66, 0, 0.95);
+const damp = Math.pow(clamp(P.damp, 0, 0.9) * 0.45, 44100 / sr);
+const fbRef = 0.8148;
+const drive = 0.32 * Math.sqrt((1 - fb * fb) / (1 - fbRef * fbRef));
 const w = clamp(wet, 0, 1);
 const combT = [1116, 1188, 1277, 1356];
 const apT = [556, 441, 225];
 const pre = Math.max(1, Math.round(P.pre * sr));
-const erD = [Math.max(1, Math.round(0.017 * sr)), Math.max(2, Math.round(0.029 * sr)), Math.max(3, Math.round(0.043 * sr))];
-const dlN = Math.max(pre, erD[2]) + 2;
+const e0 = Math.max(1, Math.round(0.017 * sr));
+const e1 = Math.max(2, Math.round(0.029 * sr));
+const e2 = Math.max(3, Math.round(0.043 * sr));
+const dlN = Math.max(pre, e2) + 2;
+const dcA = Math.exp(-2 * Math.PI * 20 / sr);
 const chans = [];
 for (let c = 0; c < ch; c++) {
 const off = Math.round(c * 23 * P.width * sc);
@@ -75,19 +80,23 @@ const combs = [];
 for (let i = 0; i < combT.length; i++) { const n = Math.max(4, Math.round(combT[i] * sc) + off); combs.push({ b: new Float32Array(n), n: n, i: 0, s: 0 }); }
 const aps = [];
 for (let i = 0; i < apT.length; i++) { const n = Math.max(4, Math.round(apT[i] * sc) + off); aps.push({ b: new Float32Array(n), n: n, i: 0 }); }
-chans.push({ combs: combs, aps: aps, dl: new Float32Array(dlN), di: 0 });
+chans.push({ combs: combs, aps: aps, dl: new Float32Array(dlN), di: 0, x1: 0, y1: 0 });
 }
 return {
 process: function (bufs, n) {
 const nch = Math.min(ch, bufs.length);
 for (let i = 0; i < n; i++) {
 for (let c = 0; c < nch; c++) {
-const st = chans[c], dry = bufs[c][i];
-st.dl[st.di] = dry;
-const rd = function (d) { return st.dl[(st.di - d + dlN * 2) % dlN]; };
-let inp = rd(pre) + 0.34 * rd(erD[0]) + 0.24 * rd(erD[1]) + 0.16 * rd(erD[2]);
-st.di = (st.di + 1) % dlN;
-inp *= 0.32;
+const st = chans[c];
+let dry = bufs[c][i];
+if (!(dry > -8 && dry < 8)) dry = 0;
+const hp = dry - st.x1 + dcA * st.y1;
+st.x1 = dry; st.y1 = hp;
+const dl = st.dl, di = st.di;
+dl[di] = hp;
+let inp = dl[(di - pre + dlN) % dlN] + 0.34 * dl[(di - e0 + dlN) % dlN] + 0.24 * dl[(di - e1 + dlN) % dlN] + 0.16 * dl[(di - e2 + dlN) % dlN];
+st.di = (di + 1) % dlN;
+inp *= drive;
 let acc = 0;
 for (let k = 0; k < st.combs.length; k++) {
 const cm = st.combs[k];
@@ -1743,7 +1752,7 @@ if (state.lang !== 'en') state.lang = 'ru';
 }
 load();
 
-let audioCtx = null, labSession = null;
+let audioCtx = null, labSession = null, safeIn = null;
 let worker = null, workerOk = false, jobId = 0, pending = null;
 let rafMeters = 0, resizeRaf = 0, progressTimer = null, progressP = 0, railW = 0;
 let spectroImg = null, spectroDirty = true, curveLastIdx = -1, curveLastVal = 0.5, curveDrawing = false;
@@ -3018,7 +3027,24 @@ if (typeof f.arrayBuffer === 'function') return f.arrayBuffer();
 return new Promise(function (res, rej) { const fr = new FileReader(); fr.onload = function () { res(fr.result); }; fr.onerror = function () { rej(new Error('read')); }; fr.readAsArrayBuffer(f); });
 }
 function ctx() {
-if (!audioCtx) { const A = window.AudioContext || window.webkitAudioContext; if (!A) throw new Error(t('noAudioSupport')); audioCtx = new A(); }
+if (!audioCtx) {
+const A = window.AudioContext || window.webkitAudioContext;
+if (!A) throw new Error(t('noAudioSupport'));
+audioCtx = new A();
+const lim = audioCtx.createDynamicsCompressor();
+lim.threshold.value = -3; lim.knee.value = 0; lim.ratio.value = 20;
+lim.attack.value = 0.003; lim.release.value = 0.25;
+const cap = audioCtx.createWaveShaper();
+const N = 1024, curve = new Float32Array(N);
+for (let i = 0; i < N; i++) {
+const x = i / (N - 1) * 2 - 1, a = Math.abs(x);
+const y = a <= 0.5 ? a : 0.5 + 0.4 * Math.tanh((a - 0.5) / 0.4);
+curve[i] = x < 0 ? -y : y;
+}
+cap.curve = curve; cap.oversample = '2x';
+lim.connect(cap); cap.connect(audioCtx.destination);
+safeIn = lim;
+}
 return audioCtx;
 }
 async function ensureCtx() { const c = ctx(); if (c.state === 'suspended') { try { await c.resume(); } catch (e) {} } return c; }
@@ -3104,8 +3130,9 @@ try { s.master.gain.cancelScheduledValues(tm); s.master.gain.setValueAtTime(s.ma
 setTimeout(function () { s.src.forEach(function (x) { try { x.stop(); } catch (e) {} try { x.disconnect(); } catch (e) {} }); s.nodes.forEach(function (x) { try { x.disconnect(); } catch (e) {} }); }, 170);
 }
 function baseSess(kind) {
+audioEl.pause();
 const m = audioCtx.createGain();
-m.gain.value = 0; m.connect(audioCtx.destination);
+m.gain.value = 0; m.connect(safeIn);
 m.gain.setValueAtTime(0, audioCtx.currentTime);
 m.gain.linearRampToValueAtTime(state.volume / 100, audioCtx.currentTime + 0.2);
 return { kind: kind, master: m, src: new Set(), nodes: new Set([m]), timerId: null, endTo: null, raf: 0 };
@@ -3262,19 +3289,25 @@ const bufs = [];
 for (let c = 0; c < 2; c++) {
 const tmp = new Float32Array(n + fade);
 DSP.noiseGen(state.liveType, sr, (Math.random() * 4294967295) >>> 0, { tilt: state.liveTilt })(tmp, n + fade);
-let s = 0; for (let i = 0; i < n + fade; i++) s += tmp[i] * tmp[i];
-const rms = Math.sqrt(s / (n + fade)), g = rms > 1e-9 ? 0.2 / rms : 1;
-const d = b.getChannelData(c);
-for (let i = 0; i < n; i++) d[i] = tmp[i] * g;
-for (let i = 0; i < fade; i++) { const f = i / fade; d[i] = tmp[i] * g * Math.sqrt(f) + tmp[n + i] * g * Math.sqrt(1 - f); }
-bufs.push(d);
+bufs.push(tmp);
 }
 if (state.liveReverb) {
 try {
 const rev = DSP.reverbNew(sr, 2, state.liveReverbPreset, state.liveReverbWet / 100);
-const CH = 16384;
-for (let p = 0; p < n; p += CH) rev.process(bufs, Math.min(CH, n - p));
+const CH = 16384, total = n + fade;
+for (let p = 0; p < total; p += CH) {
+const len = Math.min(CH, total - p);
+rev.process(bufs.map(function (x) { return x.subarray(p, p + len); }), len);
+}
 } catch (e) {}
+}
+for (let c = 0; c < 2; c++) {
+const tmp = bufs[c];
+let s = 0; for (let i = 0; i < tmp.length; i++) s += tmp[i] * tmp[i];
+const rms = Math.sqrt(s / tmp.length), g = rms > 1e-9 ? Math.min(0.2 / rms, 20) : 1;
+const d = b.getChannelData(c);
+for (let i = 0; i < n; i++) d[i] = tmp[i] * g;
+for (let i = 0; i < fade; i++) { const f = i / fade; d[i] = tmp[i] * g * Math.sqrt(f) + tmp[n + i] * g * Math.sqrt(1 - f); }
 }
 return b;
 }
@@ -3305,6 +3338,7 @@ live.node = node; live.kind = 'worklet';
 }
 function liveTeardownSource() {
 if (live.watch) { clearTimeout(live.watch); live.watch = 0; }
+if (live.rt) { clearTimeout(live.rt); live.rt = 0; }
 const n = live.node, s = live.src, l = live.lfo, lg = live.lfoGain;
 live.node = null; live.src = null; live.lfo = null; live.lfoGain = null; live.kind = 'none';
 try { if (n) n.disconnect(); } catch (e) {}
@@ -3328,6 +3362,7 @@ live.raf = requestAnimationFrame(liveMeterLoop);
 }
 async function liveStart() {
 if (live.on) return;
+audioEl.pause();
 try {
 await ensureCtx();
 live.gain = audioCtx.createGain();
@@ -3336,7 +3371,7 @@ live.an = audioCtx.createAnalyser();
 live.an.fftSize = 1024;
 live.data = new Float32Array(live.an.fftSize);
 live.gain.connect(live.an);
-live.an.connect(audioCtx.destination);
+live.an.connect(safeIn);
 live.on = true;
 let useWorklet = await ensureWorklet();
 if (useWorklet) { try { liveStartWorklet(); } catch (e) { useWorklet = false; } }
@@ -3379,15 +3414,22 @@ mediaMeta();
 function liveRebuild() {
 if (!live.on) return;
 if (live.kind === 'worklet') { liveParams(); return; }
-const old = { src: live.src, lfo: live.lfo, lg: live.lfoGain };
-live.src = null; live.lfo = null; live.lfoGain = null;
+if (live.rt) clearTimeout(live.rt);
+live.rt = setTimeout(function () {
+live.rt = 0;
+if (!live.on || live.kind !== 'buffer' || !live.gain) return;
+const tm = audioCtx.currentTime;
+try {
+live.gain.gain.setTargetAtTime(0, tm, 0.015);
+if (live.lfoGain) live.lfoGain.gain.setTargetAtTime(0, tm, 0.015);
+} catch (e) {}
+setTimeout(function () {
+if (!live.on || live.kind !== 'buffer') return;
+liveTeardownSource();
 liveStartBuffer();
 liveApplyLevel();
-setTimeout(function () {
-try { if (old.src) { old.src.stop(); old.src.disconnect(); } } catch (e) {}
-try { if (old.lfo) { old.lfo.stop(); old.lfo.disconnect(); } } catch (e) {}
-try { if (old.lg) old.lg.disconnect(); } catch (e) {}
-}, 250);
+}, 90);
+}, 150);
 }
 $('livePlay').addEventListener('click', function () { stopLab(); liveStop(); ownAbort(); setTimeout(liveStart, 60); });
 $('liveStop').addEventListener('click', function () { liveStop(); $('stageMeta').textContent = '— · —'; });
@@ -3579,6 +3621,7 @@ return own.workletOk;
 }
 async function ownStart() {
 if (own.rec || state.busy) return;
+audioEl.pause();
 if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { pFail(t('micUnsupported')); return; }
 let stream;
 try {
