@@ -148,7 +148,7 @@
     </div>
     <div class="section" id="padEndSection">
       <div class="section-label plain" data-i18n="padEnd">Тишина в конце</div>
-      <div class="input-row"><input type="range" class="slider" id="padEndSlider" min="0" max="60" step="1" value="0" aria-label=""><input type="number" class="num-input" id="padEndNum" min="0" max="60" step="1" value="0"><span class="unit" data-i18n="sec">сек</span></div>
+      <div class="input-row"><input type="range" class="slider" id="padEndSlider" min="0" max="60" step="1" value="0" data-i18n-aria="padEnd"><input type="number" class="num-input" id="padEndNum" min="0" max="60" step="1" value="0"><span class="unit" data-i18n="sec">сек</span></div>
     </div>
 
     <label class="switch-row" for="loopToggle">
@@ -180,7 +180,7 @@
     </div>
 
     <div class="mood-read hidden" id="moodRead">
-      <div class="mood-read-title" data-i18n="computedProfile">Вычисленный профиль</div>
+      <div class="mood-read-title" data-i18n="computedProfile">Профиль</div>
       <div class="mood-grid" id="moodGrid"></div>
       <div class="mood-formula" id="moodFormula"></div>
     </div>
@@ -190,7 +190,7 @@
       <button class="btn-secondary hidden" id="cancelBtn" type="button" data-i18n="cancel">Отменить</button>
     </div>
     <div class="estimate" id="estimate"></div>
-    <button class="mini-btn" id="clearSession" type="button" data-i18n="clearSession">Очистить сохранённое</button>
+    <button class="mini-btn" id="clearSession" type="button" data-i18n="clearSession">Очистить сессию</button>
   </aside>
 
   <aside class="panel sidebar hidden" id="mixSidebar" role="tabpanel" aria-labelledby="tab-mix">
@@ -318,7 +318,7 @@
       <label class="switch-row" for="liveReverbToggle">
         <input type="checkbox" id="liveReverbToggle" class="switch-input">
         <span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span>
-        <span class="switch-text"><span data-i18n="reverbTitle">Пространство</span><span class="switch-sub" data-i18n="liveReverbSub"></span></span>
+        <span class="switch-text"><span data-i18n="reverbTitle">Реверберация</span><span class="switch-sub" data-i18n="liveReverbSub"></span></span>
       </label>
       <div class="section" id="liveReverbSection">
         <select class="select" id="liveReverbPreset" data-i18n-aria="spacePreset"></select>
@@ -365,8 +365,8 @@
         <div class="input-row"><input type="range" class="slider" id="signalDur" min="2" max="60" step="1" value="20" data-i18n-aria="durationAria"><input type="number" class="num-input" id="signalDurNum" min="2" max="60" step="1" value="20"><span class="unit" data-i18n="sec">сек</span></div>
       </div>
       <div class="section">
-        <div class="section-label plain" data-i18n="level">Уровень</div>
-        <div class="input-row"><input type="range" class="slider" id="signalLevel" min="-60" max="0" step="1" value="-12" data-i18n-aria="level"><input type="number" class="num-input" id="signalLevelNum" min="-60" max="0" step="1" value="-12"><span class="unit">dBFS</span></div>
+        <div class="section-label plain" data-i18n="levelPeak">Уровень (пик)</div>
+        <div class="input-row"><input type="range" class="slider" id="signalLevel" min="-60" max="0" step="1" value="-12" data-i18n-aria="levelPeak"><input type="number" class="num-input" id="signalLevelNum" min="-60" max="0" step="1" value="-12"><span class="unit">dBFS</span></div>
         <div class="note" data-i18n="signalLevelNote"></div>
       </div>
       <div class="section" id="signalChanSection">
@@ -645,10 +645,12 @@
       <div class="dl-group">
         <select class="select compact" id="dlBitDepth" data-i18n-aria="dlBitDepth"><option value="16" data-i18n="bit16">16 бит</option><option value="24" selected data-i18n="bit24">24 бит</option><option value="32" data-i18n="bit32">32 бит</option></select>
         <button class="btn-secondary" id="dlWavBtn" type="button" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg><span>WAV</span></button>
+        <button class="btn-secondary hidden" id="dlWavStereoBtn" type="button" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg><span data-i18n="dlWavStereo">WAV стерео</span></button>
         <select class="select compact" id="mp3Rate" data-i18n-aria="mp3Bitrate"><option value="128" data-i18n="kbps128">128 кбит</option><option value="192" selected data-i18n="kbps192">192 кбит</option><option value="256" data-i18n="kbps256">256 кбит</option><option value="320" data-i18n="kbps320">320 кбит</option></select>
         <button class="btn-secondary" id="dlMp3Btn" type="button" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg><span>MP3</span></button>
       </div>
     </div>
+    <div class="note hidden" id="surroundNote"></div>
   </section>
 
 </main>
