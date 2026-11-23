@@ -52,13 +52,13 @@ return { b0: b0 / a0, b1: b1 / a0, b2: b2 / a0, a1: a1 / a0, a2: a2 / a0, x1: 0,
 }
 function reverbNew(sr, ch, key, wet) {
 const P = {
-room: { size: 0.56, damp: 0.52, pre: 0.008, width: 0.55 },
-hall: { size: 0.78, damp: 0.34, pre: 0.020, width: 0.9 },
-opera: { size: 0.86, damp: 0.27, pre: 0.030, width: 1.0 },
-cathedral: { size: 0.94, damp: 0.19, pre: 0.045, width: 1.0 },
-parking: { size: 0.82, damp: 0.63, pre: 0.014, width: 0.8 },
-tunnel: { size: 0.90, damp: 0.46, pre: 0.050, width: 0.65 }
-}[key] || { size: 0.78, damp: 0.34, pre: 0.020, width: 0.9 };
+room: { size: 0.56, damp: 0.52, pre: 0.008, width: 0.55, dryK: 0.50, wetK: 0.40 },
+hall: { size: 0.78, damp: 0.34, pre: 0.020, width: 0.90, dryK: 0.55, wetK: 0.42 },
+opera: { size: 0.86, damp: 0.27, pre: 0.030, width: 1.00, dryK: 0.50, wetK: 0.45 },
+cathedral: { size: 0.94, damp: 0.19, pre: 0.045, width: 1.00, dryK: 0.42, wetK: 0.50 },
+parking: { size: 0.82, damp: 0.63, pre: 0.014, width: 0.80, dryK: 0.60, wetK: 0.38 },
+tunnel: { size: 0.90, damp: 0.46, pre: 0.050, width: 0.65, dryK: 0.50, wetK: 0.46 }
+}[key] || { size: 0.78, damp: 0.34, pre: 0.020, width: 0.90, dryK: 0.55, wetK: 0.42 };
 const sc = sr / 44100;
 const fb = 0.30 + P.size * 0.66;
 const damp = clamp(P.damp, 0, 0.9) * 0.45;
@@ -105,7 +105,7 @@ ap.b[ap.i] = acc + buf * 0.5;
 ap.i = (ap.i + 1) % ap.n;
 acc = y;
 }
-bufs[c][i] = dry * (1 - w * 0.55) + acc * w * 0.42;
+bufs[c][i] = dry * (1 - w * P.dryK) + acc * w * P.wetK;
 }
 }
 }
@@ -684,12 +684,12 @@ dv.setUint16(p, ch * bps, true); p += 2;
 dv.setUint16(p, bps * 8, true); p += 2;
 if (ext) {
 dv.setUint16(p, 22, true); p += 2;
-dv.setUint16(p, bits, true); p += 2;
+dv.setUint16(p, bps * 8, true); p += 2;
 dv.setUint32(p, ch === 6 ? 0x3F : (ch === 8 ? 0x63F : 0), true); p += 4;
 dv.setUint16(p, bits === 32 ? 3 : 1, true); p += 2;
 dv.setUint16(p, 0, true); p += 2;
 dv.setUint32(p, 0x00100000, true); p += 4;
-dv.setUint32(p, 0x0000AA00, true); p += 4;
+dv.setUint32(p, 0xAA000080, true); p += 4;
 dv.setUint32(p, 0x719B3800, true); p += 4;
 }
 ws('data'); dv.setUint32(p, dataSize, true);
@@ -762,8 +762,8 @@ for (let i = 0; i < n; i++) {
 const b = i * ch;
 const fl = s[b], fr = s[b + 1], fc = s[b + 2], lfe = s[b + 3];
 let l, r;
-if (ch === 6) { l = fl + K * fc + K * s[b + 4] + 0.5 * lfe; r = fr + K * fc + K * s[b + 5] + 0.5 * lfe; }
-else { l = fl + K * fc + K * s[b + 6] + 0.5 * s[b + 4] + 0.5 * lfe; r = fr + K * fc + K * s[b + 7] + 0.5 * s[b + 5] + 0.5 * lfe; }
+if (ch === 6) { l = fl + K * fc + K * s[b + 4] + 0.35 * lfe; r = fr + K * fc + K * s[b + 5] + 0.35 * lfe; }
+else { l = fl + K * fc + K * s[b + 6] + 0.5 * s[b + 4] + 0.35 * lfe; r = fr + K * fc + K * s[b + 7] + 0.5 * s[b + 5] + 0.35 * lfe; }
 out[i * 2] = l; out[i * 2 + 1] = r;
 const al = l < 0 ? -l : l, ar = r < 0 ? -r : r;
 if (al > pk) pk = al;
@@ -1042,7 +1042,10 @@ const loop = !!spec.loop && canLoop;
 const padA = loop ? 0 : (spec.padA || 0), padB = loop ? 0 : (spec.padB || 0);
 const total = padA + body + padB;
 const fi = loop ? 0 : Math.min(body, spec.fadeIn || 0), fo = loop ? 0 : Math.min(body, spec.fadeOut || 0);
-const loopFade = loop ? Math.max(1, Math.min(Math.floor(sr * 0.25), body >> 2)) : 0;
+let fadeSec = 0.25;
+if (spec.kind === 'granular') fadeSec = Math.max(0.4, clamp(spec.grain || 90, 20, 400) / 1000 * 2.5);
+else if (spec.kind === 'match') fadeSec = 0.5;
+const loopFade = loop ? Math.max(1, Math.min(Math.floor(sr * fadeSec), body >> 2)) : 0;
 const CH = 16384;
 const bufs = []; for (let c = 0; c < ch; c++) bufs.push(new Float32Array(CH));
 if (!arrays) {
@@ -1069,17 +1072,12 @@ gens.push(firGen(firDesign(spec.taps || 4096, sr, mag), rng(sd), spec.dist === '
 }
 }
 }
-const fillBody = function (n) {
-if (arrays) { for (let c = 0; c < ch; c++) { const a = arrays[c]; for (let i = 0; i < n; i++) bufs[c][i] = a[i] || 0; } return; }
-if (mood) { mood.fill(bufs, n); return; }
-for (let c = 0; c < ch; c++) gens[c](bufs[c], n);
-};
 const rev = spec.reverb ? reverbNew(sr, ch, spec.reverbPreset, (spec.reverbWet === undefined ? 30 : spec.reverbWet) / 100) : null;
 const an = makeAnalyzer(sr, ch, total, { fftSize: spec.fftSize, window: spec.window, cols: 480, buckets: 1600, activeStart: padA, activeEnd: padA + body });
 const parts = [];
 const head = [], tail = [];
 if (loop) for (let c = 0; c < ch; c++) { head.push(new Float32Array(loopFade)); tail.push(new Float32Array(loopFade)); }
-let pos = 0, t0 = Date.now(), bodyPos = 0;
+let pos = 0, t0 = Date.now();
 hooks.progress(0.11, 'genMeasure');
 while (pos < total) {
 let limit = total;
@@ -1103,7 +1101,6 @@ bufs[c][i] = v;
 if (loop && idx < loopFade) head[c][idx] = v;
 }
 }
-bodyPos = bi + n;
 } else for (let c = 0; c < ch; c++) bufs[c].fill(0, 0, n);
 an.feed(bufs, n, pos);
 const ab = new ArrayBuffer(n * ch * 4);
@@ -1176,7 +1173,7 @@ const trim = dm.peak > 0.99 ? 0.99 / dm.peak : 1;
 res.masterStereo = dm.blob;
 res.previewGain = gain * trim;
 hooks.progress(0.93, 'preview');
-res.preview = await quantize(dm.blob, sr, 2, 24, false, res.previewGain, hooks, 0.93, 1);
+res.preview = await quantize(dm.blob, sr, 2, 16, true, res.previewGain, hooks, 0.93, 1);
 }
 return res;
 }
@@ -1254,11 +1251,10 @@ tiltTitle: ['Дополнительный наклон α', 'Additional tilt α'
 tiltShort: ['Наклон α', 'Tilt α'],
 exactTitle: ['Точный спектр', 'Exact spectrum'],
 exactSub: ['Референсные кривые вместо фильтровых аппроксимаций. Медленнее в 3–5 раз', 'Reference curves instead of filter approximations. 3–5× slower'],
-space: ['Пространство', 'Space'],
-spacePreset: ['Пресет пространства', 'Space preset'],
-spaceAmount: ['Доля пространства', 'Space amount'],
+spacePreset: ['Пресет реверберации', 'Reverb preset'],
+spaceAmount: ['Доля реверберации', 'Reverb amount'],
 reverbTitle: ['Реверберация', 'Reverb'],
-reverbSub: ['Помещает шум в пространство. На стационарном шуме эффект тонкий, всего заметнее на ударах и записях', 'Places the noise in a room. Subtle on stationary noise, most audible on hits and recordings'],
+reverbSub: ['Помещает шум в помещение. На стационарном шуме эффект тонкий, всего заметнее на ударах и записях', 'Places the noise in a room. Subtle on stationary noise, most audible on hits and recordings'],
 liveReverbSub: ['Реверберация поверх бесконечного шума', 'Reverb over the endless noise'],
 ownReverbSub: ['Добавить помещению ещё одно помещение', 'Add another room to the room'],
 fadeIn: ['Fade in', 'Fade in'],
@@ -1276,11 +1272,11 @@ seedFixed: ['Фикс', 'Fixed'],
 seedNote: ['Один seed и одни параметры дают бит-в-бит одинаковый файл', 'Same seed and same parameters give a bit-identical file'],
 mood: ['Настроение', 'Mood'],
 task: ['Задача', 'Task'],
-computedProfile: ['Вычисленный профиль', 'Computed profile'],
+computedProfile: ['Профиль', 'Profile'],
 generate: ['Сгенерировать', 'Generate'],
 generating: ['Генерация…', 'Generating…'],
 cancel: ['Отменить', 'Cancel'],
-clearSession: ['Очистить сохранённое', 'Clear saved session'],
+clearSession: ['Очистить сессию', 'Clear session'],
 track: ['Трек', 'Track'],
 noise: ['Шум', 'Noise'],
 snrTitle: ['Отношение шум / трек', 'Noise / track ratio'],
@@ -1334,6 +1330,7 @@ taps8192: ['8192 отвода', '8192 taps'],
 curveReset: ['Сбросить в 0 дБ', 'Reset to 0 dB'],
 signal: ['Сигнал', 'Signal'],
 level: ['Уровень', 'Level'],
+levelPeak: ['Уровень (пик)', 'Level (peak)'],
 signalLevelNote: ['Уровень задаёт амплитуду (пик). Для синуса RMS окажется на 3 дБ ниже', 'Level sets amplitude (peak). For a sine, RMS will be 3 dB lower'],
 channel: ['Канал', 'Channel'],
 both: ['Оба', 'Both'],
@@ -1369,7 +1366,8 @@ resultDuration: ['Длительность результата', 'Result durati
 grainSize: ['Размер зерна', 'Grain size'],
 dlWav: ['Скачать WAV', 'Download WAV'],
 dlMp3: ['Скачать MP3', 'Download MP3'],
-ownFormatNote: ['Формат и битрейт берутся из плеера внизу. Многоканальный WAV сохраняется со всеми каналами, MP3 делается из стерео-сведения', 'Format and bit depth come from the player below. Multichannel WAV keeps all channels; MP3 is made from a stereo downmix'],
+dlWavStereo: ['WAV стерео', 'WAV stereo'],
+ownFormatNote: ['Формат и битрейт берутся из плеера внизу. Многоканальный WAV сохраняет все каналы, MP3 делается из стерео-сведения', 'Format and bit depth come from the player below. Multichannel WAV keeps all channels; MP3 is made from a stereo downmix'],
 stageAria: ['Результат и измерения', 'Result and measurements'],
 viewAria: ['Вид анализа', 'Analysis view'],
 viewWave: ['Волна', 'Waveform'],
@@ -1510,7 +1508,6 @@ ltasHeadRel: ['Отн., дБ', 'Rel., dB'],
 ltasHeadProfile: ['Профиль', 'Profile'],
 waveWindow: ['Окно {0} – {1} · {2} с', 'Window {0} – {1} · {2} s'],
 waveSelection: [' · выделение {0} с · пик {1} dBFS', ' · selection {0} s · peak {1} dBFS'],
-waveHint: ['Перетаскивание — выделение · колесо — зум · Shift+перетаскивание — сдвиг · двойной клик — вся волна', 'Drag to select · wheel to zoom · Shift+drag to pan · double-click for the whole wave'],
 noResult: ['Нет результата', 'No result'],
 histAxis: ['амплитуда после нормализации · логарифмическая частота', 'amplitude after normalisation · logarithmic count'],
 histGauss: ['гауссова огибающая', 'Gaussian envelope'],
@@ -1520,7 +1517,6 @@ loudLegendM: ['M 400 мс', 'M 400 ms'],
 loudLegendS: ['S 3 с', 'S 3 s'],
 loudLegendTp: ['Истинный пик', 'True peak'],
 loudLegendI: ['I интегральная', 'I integrated'],
-slopedLegends: ['0 дБ/окт', '0 dB/oct'],
 cursorAvg: ['усреднение по {0} окнам', 'averaged over {0} windows'],
 perBand: ['dBFS на полосу', 'dBFS per band'],
 stageVisual: ['Визуализация', 'Visualisation'],
@@ -1545,11 +1541,12 @@ spaceSuffix: [' · реверб', ' · reverb'],
 boostSuffix: [' · +{0} дБ', ' · +{0} dB'],
 micRecording: ['Запись с микрофона', 'Microphone recording'],
 ownInfoFmt: ['{0} · {1} · {2} Гц · {3} · {4} в памяти', '{0} · {1} · {2} Hz · {3} · {4} in memory'],
-surroundPreviewNote: ['Прослушивание идёт через стерео-сведение, WAV сохраняет все каналы', 'Monitoring uses a stereo downmix; the WAV keeps all channels'],
+surroundPreviewNote: ['плеер играет стерео-сведение', 'the player uses a stereo downmix'],
+surroundNote: ['Многоканальный WAV: 16 бит открывают почти все плееры. Если Windows или телефон отказываются играть 8 каналов — нажмите «WAV стерео», это тот же материал, сведённый по стандарту', 'Multichannel WAV: 16 bit opens in almost every player. If Windows or a phone refuses 8 channels, press WAV stereo — same material, standard downmix'],
 chCount: ['{0} кан.', '{0} ch'],
+monoDash: ['— (моно)', '— (mono)'],
 moodOffNote: ['Выключено — спектр задаётся типом шума и наклоном выше', 'Off — the spectrum comes from the noise type and tilt above'],
 taskOffNote: ['Выключено — настроение работает само по себе', 'Off — the mood works on its own'],
-moodTaskOverride: ['Настроение и задача задают спектр, уровень и пространство. Тип шума и наклон выше отключены', 'Mood and task define spectrum, level and space. Noise type and tilt above are disabled'],
 profileAlpha: ['Наклон α', 'Tilt α'],
 profileWarm: ['Тепло', 'Warmth'],
 profileAir: ['Воздух', 'Air'],
@@ -1560,7 +1557,7 @@ profileWidth: ['Ширина', 'Width'],
 profileLevel: ['Уровень', 'Level'],
 profileSpace: ['Реверберация', 'Reverb'],
 profileNorm: ['Нормализация', 'Normalisation'],
-profileFormula: ['Профиль = среднее арифметическое выбранных пресетов по каждому параметру. Спектр: PSD ∝ f^−α, затем шелф 200 Гц, шелф 8 кГц и Presence-полоса; поверх — амплитудная модуляция и медленный дрейф.', 'Profile = arithmetic mean of the selected presets for every parameter. Spectrum: PSD ∝ f^−α, then a 200 Hz shelf, an 8 kHz shelf and a presence band; amplitude modulation and slow drift on top.'],
+profileFormula: ['Профиль = среднее арифметическое выбранных пресетов по каждому параметру. Спектр: PSD ∝ f^−α, затем шелф 200 Гц, шелф 8 кГц и presence-полоса; поверх — амплитудная модуляция и медленный дрейф.', 'Profile = arithmetic mean of the selected presets for every parameter. Spectrum: PSD ∝ f^−α, then a 200 Hz shelf, an 8 kHz shelf and a presence band; amplitude modulation and slow drift on top.'],
 profileFormulaOne: ['Профиль взят из одного пресета. Спектр: PSD ∝ f^−α, затем шелф 200 Гц, шелф 8 кГц и presence-полоса; поверх — амплитудная модуляция и медленный дрейф.', 'Profile taken from a single preset. Spectrum: PSD ∝ f^−α, then a 200 Hz shelf, an 8 kHz shelf and a presence band; amplitude modulation and slow drift on top.'],
 sigSweep: ['Лог-свип 20 Гц – 20 кГц', 'Log sweep 20 Hz – 20 kHz'],
 sigSteps: ['Ступенчатые синусы по третьоктавам', 'Third-octave stepped sines'],
@@ -1575,14 +1572,14 @@ sigSur71: ['Surround 7.1 · независимый шум', 'Surround 7.1 · ind
 sigSurId: ['Surround 7.1 · обход каналов', 'Surround 7.1 · channel walk'],
 noteSweep: ['Логарифмический свип с фейдами по 20 мс', 'Logarithmic sweep with 20 ms fades'],
 noteSteps: ['Третьоктавные ступени от 25 Гц до 20 кГц, каждая со своими микрофейдами', 'Third-octave steps from 25 Hz to 20 kHz, each with its own micro-fades'],
-noteTone: ['Опорный тон 1 кГц', 'Reference tone at 1 kHz'],
+noteTone: ['Опорный тон 1 кГц. Уровень — амплитуда, RMS на 3 дБ ниже', 'Reference tone at 1 kHz. Level is amplitude, RMS is 3 dB lower'],
 notePinkband: ['Розовый шум в полосе 500 Гц – 2 кГц, нормирован по пиковому уровню. Пригоден для настройки речевого тракта', 'Pink noise in a 500 Hz – 2 kHz band, peak-normalised. Useful for speech-path alignment'],
 notePolarity: ['Пачки только положительных полуволн 200 Гц. На волне видно, что сигнал несимметричен: переворот полярности меняет форму вверх ногами', 'Bursts of positive-only 200 Hz half-cycles. The waveform is visibly asymmetric: flipping polarity turns it upside down'],
 noteChannels: ['Шесть сегментов: L 440 Гц, R 880 Гц, оба, и повтор. Проверка распайки и баланса', 'Six segments: L 440 Hz, R 880 Hz, both, then repeat. Checks wiring and balance'],
 notePhase: ['Чередование синфазы и противофазы каждые 0,9 с. В противофазе звук растекается по сторонам и почти исчезает при сведении в моно', 'Alternates in-phase and out-of-phase every 0.9 s. Out of phase the sound spreads sideways and nearly vanishes when summed to mono'],
 noteIsp: ['Синус на четверти частоты дискретизации со сдвигом 45°: отсчёты −0,1 dBFS, истинный пик около +2,9 dBTP. Уровень здесь не используется', 'A sine at a quarter of the sample rate with a 45° offset: samples at −0.1 dBFS, true peak near +2.9 dBTP. The level control is not used here'],
-noteSur51: ['Шесть независимых каналов: FL, FR, FC, LFE, BL, BR. LFE ограничен 120 Гц. Прослушивание через стерео-сведение, WAV сохраняет все шесть каналов, MP3 делается из сведения', 'Six independent channels: FL, FR, FC, LFE, BL, BR. LFE limited to 120 Hz. Monitoring uses a stereo downmix; the WAV keeps all six channels and MP3 is made from the downmix'],
-noteSur71: ['Восемь независимых каналов: FL, FR, FC, LFE, BL, BR, SL, SR. Каждый со своим seed, поэтому каналы полностью декоррелированы. Прослушивание через стерео-сведение', 'Eight independent channels: FL, FR, FC, LFE, BL, BR, SL, SR. Each with its own seed, so the channels are fully decorrelated. Monitoring uses a stereo downmix'],
+noteSur51: ['Шесть независимых каналов: FL, FR, FC, LFE, BL, BR. LFE ограничен 120 Гц. WAV сохраняет все шесть каналов, кнопка «WAV стерео» отдаёт совместимую версию', 'Six independent channels: FL, FR, FC, LFE, BL, BR. LFE limited to 120 Hz. The WAV keeps all six channels; WAV stereo gives a compatible version'],
+noteSur71: ['Восемь независимых каналов: FL, FR, FC, LFE, BL, BR, SL, SR. Каждый со своим seed, поэтому каналы полностью декоррелированы. WAV сохраняет все восемь, «WAV стерео» — совместимая версия', 'Eight independent channels: FL, FR, FC, LFE, BL, BR, SL, SR. Each with its own seed, so the channels are fully decorrelated. The WAV keeps all eight; WAV stereo is the compatible version'],
 noteSurId: ['Поочерёдный обход восьми каналов 7.1: FL 440, FR 550, FC 660, LFE 90, BL 880, BR 990, SL 1100, SR 1320 Гц. Проверка распайки surround-системы', 'Sequential walk through eight 7.1 channels: FL 440, FR 550, FC 660, LFE 90, BL 880, BR 990, SL 1100, SR 1320 Hz. Checks surround wiring'],
 roomRoom: ['Комната', 'Room'],
 roomHall: ['Зал', 'Hall'],
@@ -1620,18 +1617,18 @@ taskRest: ['Отдых', 'Rest'],
 taskReading: ['Чтение', 'Reading'],
 taskWork: ['Работа', 'Work'],
 taskBreathing: ['Дыхание', 'Breathing'],
-taskMasking: ['Маскировка', 'Masking'],
+taskMasking: ['Перекрыть шум', 'Cover noise'],
 taskCreativity: ['Творчество', 'Creativity'],
 tkSleep: ['Очень тихо и темно, минимум движения, уровень −24', 'Very quiet and dark, minimal movement, level −24'],
-tkFocus: ['Ровный masker в середине, без пульсации и дрейфа', 'An even midrange masker with no pulsation or drift'],
+tkFocus: ['Ровный фон в середине, без пульсации и дрейфа', 'An even midrange bed with no pulsation or drift'],
 tkResearch: ['Нейтральный опорный сигнал для измерений, без окраски', 'A neutral reference for measurements, no colouration'],
-tkMeditation: ['Медленное дыхание и лёгкое пространство', 'Slow breathing and a light space'],
+tkMeditation: ['Медленное дыхание и лёгкая реверберация', 'Slow breathing and a light reverb'],
 tkRest: ['Тихий тёплый фон с медленным дрейфом', 'A quiet warm bed with slow drift'],
 tkReading: ['Приглушённый верх, чтобы не мешать внутреннему голосу', 'A muted top so it does not fight the inner voice'],
 tkWork: ['Нейтральный рабочий фон, слегка живой', 'A neutral working bed, slightly alive'],
 tkBreathing: ['Пульсация 0,1 Гц — шесть вдохов в минуту', 'Pulsation at 0.1 Hz — six breaths per minute'],
-tkMasking: ['Плотная середина и присутствие, чтобы закрыть речь', 'A dense midrange and presence to cover speech'],
-tkCreativity: ['Подвижная текстура с пространством и лёгким дрейфом', 'A mobile texture with space and gentle drift']
+tkMasking: ['Плотная середина и присутствие, чтобы закрыть разговоры и уличный шум', 'A dense midrange and presence to cover speech and street noise'],
+tkCreativity: ['Подвижная текстура с реверберацией и лёгким дрейфом', 'A mobile texture with reverb and gentle drift']
 };
 
 const MOODS = [
@@ -1663,7 +1660,6 @@ const TASKS = [
 const PKEYS = ['a', 'warm', 'air', 'focus', 'fq', 'fg', 'mod', 'rate', 'drift', 'width', 'level', 'wet', 'room'];
 const ROOMS = [['room', 'roomRoom'], ['hall', 'roomHall'], ['opera', 'roomOpera'], ['cathedral', 'roomCathedral'], ['parking', 'roomParking'], ['tunnel', 'roomTunnel']];
 const ROOM_MOOD = ['room', 'hall', 'opera', 'cathedral'];
-
 const TYPES = ['white', 'pink', 'brown', 'blue', 'violet', 'green', 'grey'];
 const TYPE_KEYS = { white: ['Белый', 'White'], pink: ['Розовый', 'Pink'], brown: ['Коричневый', 'Brown'], blue: ['Синий', 'Blue'], violet: ['Фиолетовый', 'Violet'], green: ['Зелёный', 'Green'], grey: ['Серый', 'Grey'] };
 const COLORS = { white: '#e8e2da', pink: '#dba9a3', brown: '#8f6b47', blue: '#7d8fa8', violet: '#9b7fa8', green: '#88a383', grey: '#8a8278' };
@@ -1683,7 +1679,7 @@ none: ['Уровень не меняется. Клиппинг, если он п
 const SIG_KEYS = { sweep: 'sigSweep', steps: 'sigSteps', tone: 'sigTone', pinkband: 'sigPinkband', polarity: 'sigPolarity', channels: 'sigChannels', phase: 'sigPhase', isp: 'sigIsp', sur51: 'sigSur51', sur71: 'sigSur71', surid: 'sigSurId' };
 const SIG_NOTES = { sweep: 'noteSweep', steps: 'noteSteps', tone: 'noteTone', pinkband: 'notePinkband', polarity: 'notePolarity', channels: 'noteChannels', phase: 'notePhase', isp: 'noteIsp', sur51: 'noteSur51', sur71: 'noteSur71', surid: 'noteSurId' };
 const OWN_NOTES = {
-asis: ['Исходная запись без изменений, доступны только огибающая, уровень и пространство', 'The original recording unchanged; only fades, level and space are available'],
+asis: ['Исходная запись без изменений, доступны только фейды, уровень и реверберация', 'The original recording unchanged; only fades, level and reverb are available'],
 match: ['Замеряется усреднённый спектр записи и синтезируется стационарный шум с той же АЧХ. Тембр помещения остаётся, события исчезают', 'The averaged spectrum of the recording is measured and stationary noise with the same response is synthesised. Room timbre stays, events disappear'],
 granular: ['Запись режется на зёрна и собирается заново со случайными сдвигами и скоростью. Фактура остаётся живой, но перестаёт повторяться', 'The recording is cut into grains and reassembled with random offsets and rates. The texture stays alive but stops repeating']
 };
@@ -2517,9 +2513,12 @@ audioEl.src = state.url; audioEl.loop = state.loop; audioEl.volume = state.volum
 if (old) URL.revokeObjectURL(old);
 spectroDirty = true; spectroImg = null;
 waveView.a = 0; waveView.b = 1; waveView.sa = -1; waveView.sb = -1;
-$('dlBitDepth').value = String(r.bits); state.dlBits = r.bits;
+const bits = r.ch > 2 ? 16 : r.bits;
+$('dlBitDepth').value = String(bits); state.dlBits = bits;
 seekBar.disabled = false; seekBar.value = 0;
 $('stageMeta').textContent = stageMetaText();
+$('surroundNote').textContent = t('surroundNote');
+$('surroundNote').classList.toggle('hidden', !(r.ch > 2));
 timeText(); renderChips(); buildLtas(); updateMeters(); syncView(); refresh(); mediaMeta();
 if (!restored) scheduleSessionSave();
 }
@@ -2536,6 +2535,8 @@ $('reanalyzeBtn').disabled = b || !state.master;
 $('reanalyzeBtn').classList.toggle('pending', state.fftPending && !b);
 $('dlWavBtn').disabled = b || !state.wav;
 $('dlMp3Btn').disabled = b || !state.mp3Master;
+$('dlWavStereoBtn').disabled = b || !state.mp3Master || state.ch <= 2;
+$('dlWavStereoBtn').classList.toggle('hidden', state.ch <= 2);
 $('playBtn').disabled = !state.url;
 ['cancelBtn', 'cancelBtnMix', 'cancelBtnCurve', 'cancelBtnSignal', 'cancelBtnCalib', 'cancelBtnSynth', 'ownCancel'].forEach(function (id) { const e = $(id); if (e) e.classList.toggle('hidden', !b); });
 $('viewToggle').querySelectorAll('.view-btn').forEach(function (btn) { btn.disabled = btn.dataset.view === 'curve' ? false : !state.analysis; });
@@ -2769,7 +2770,7 @@ const rows = [
 [t('profileFocus'), hzLabel(pr.focus)],
 [t('profileMod'), num(pr.mod * 100, 0) + ' %'],
 [t('profileRate'), num(pr.rate, 2) + ' Hz'],
-[t('profileWidth'), num(pr.width, 2)],
+[t('profileWidth'), state.channels === 1 ? t('monoDash') : num(pr.width, 2)],
 [t('profileLevel'), db(pr.level, 1) + ' ' + NORM_UNIT[pr.norm]],
 [t('profileSpace'), pr.wet > 0.01 ? roomLabel(roomFromValue(pr.room)) + ' ' + num(pr.wet * 100, 0) + '%' : '—'],
 [t('profileNorm'), t(pr.norm === 'lufs' ? 'normLufs' : pr.norm === 'rms' ? 'normRms' : 'normTrue')]
@@ -2869,7 +2870,7 @@ $('seedLock').setAttribute('aria-pressed', state.seedAuto ? 'true' : 'false');
 $('seedLock').textContent = state.seedAuto ? t('seedAuto') : t('seedFixed');
 save();
 });
-segment('channelSegmented', 'channels', function (v) { state.channels = parseInt(v, 10); estimate(); });
+segment('channelSegmented', 'channels', function (v) { state.channels = parseInt(v, 10); estimate(); syncMoodUI(); });
 segment('distSegmented', 'dist', function (v) { state.dist = v; });
 segment('signalChannel', 'schan', function (v) { state.signalChan = v; });
 segment('calibBand', 'band', function (v) { state.calibBand = v; });
@@ -2930,10 +2931,10 @@ const rows = ['freq_hz;level_dbfs_per_band'], lg = gainDb();
 for (let k = 1; k < a.half; k++) { const f = k * state.sr / a.fftSize; if (f < 10) continue; rows.push(f.toFixed(3) + ';' + (10 * Math.log10(Math.max(a.avg[k], 1e-20)) + lg).toFixed(4)); }
 csvDownload('wnl-spectrum-' + state.key + '-' + stamp() + '.csv', rows.join('\n'));
 });
-function grab(blob, ext, bits) {
+function grab(blob, ext, bits, tag) {
 const u = URL.createObjectURL(blob), a = document.createElement('a');
 a.href = u;
-a.download = 'wnl-' + state.key + '-' + Math.round(state.duration_s) + 's-' + state.sr + 'hz-' + (ext === 'mp3' ? state.mp3Rate + 'kbps' : bits + 'bit') + '-seed' + state.seed + '-' + stamp() + '.' + ext;
+a.download = 'wnl-' + state.key + (tag ? '-' + tag : '') + '-' + Math.round(state.duration_s) + 's-' + state.sr + 'hz-' + (ext === 'mp3' ? state.mp3Rate + 'kbps' : bits + 'bit') + '-seed' + state.seed + '-' + stamp() + '.' + ext;
 document.body.appendChild(a); a.click(); document.body.removeChild(a);
 setTimeout(function () { URL.revokeObjectURL(u); }, 20000);
 }
@@ -2944,6 +2945,14 @@ if (bits === state.bits) { grab(state.wav, 'wav', bits); return; }
 job($('dlWavBtn'), t('generating'), async function (hooks) {
 const r = await runDsp('requant', { master: state.master, sr: state.sr, ch: state.ch, bits: bits, dither: state.dither, gain: state.gain }, hooks);
 grab(r.wav, 'wav', bits);
+});
+});
+$('dlWavStereoBtn').addEventListener('click', function () {
+if (!state.mp3Master || state.ch <= 2) return;
+const bits = parseInt($('dlBitDepth').value, 10);
+job($('dlWavStereoBtn'), t('generating'), async function (hooks) {
+const r = await runDsp('requant', { master: state.mp3Master, sr: state.sr, ch: 2, bits: bits, dither: state.dither, gain: state.mp3Gain }, hooks);
+grab(r.wav, 'wav', bits, 'stereo');
 });
 });
 $('dlMp3Btn').addEventListener('click', function () {
@@ -3845,9 +3854,10 @@ Object.keys(knobs).forEach(function (k) { knobs[k].refresh(); });
 $('seedLock').textContent = state.seedAuto ? t('seedAuto') : t('seedFixed');
 $('mixFileName').textContent = state.mixFile ? state.mixFile.name : t('chooseFile');
 if (!state.mixFile) $('mixInfo').textContent = t('noFile');
-$('ownFileName').textContent = own.arrays && own.name !== t('micRecording') ? own.name : (own.arrays ? own.name : t('orLoadFile'));
+$('ownFileName').textContent = own.arrays ? own.name : t('orLoadFile');
 $('stageLabel').textContent = state.mode === 'mix' ? t('tabMix') : (state.mode === 'lab' ? t('tabLab') : t('stageVisual'));
 $('tiltNote').textContent = (state.lang === 'en' ? 'Adds ' : 'Добавляет ') + db(-3.0103 * state.tilt, 2) + ' ' + t('slopeUnit');
+$('surroundNote').textContent = t('surroundNote');
 syncNormUI(); syncDitherUI(); syncSignalUI(); syncCurveRange(); syncReverbUI(); syncMoodUI(); ownSyncUI(); ownInfoUpdate();
 estimate();
 playIcon(!audioEl.paused);
@@ -3891,9 +3901,6 @@ $('ownFileName').textContent = own.name;
 }
 const saved = await idbGet('result');
 if (saved && saved.r && saved.r.master) {
-state.mp3Master = saved.mp3Master || null;
-state.mp3Ch = saved.mp3Ch || 2;
-state.mp3Gain = saved.mp3Gain || 1;
 applyResult(saved.r, saved.key, saved.meta, true);
 state.mp3Master = saved.mp3Master || saved.r.masterStereo || saved.r.master;
 state.mp3Ch = saved.mp3Ch || (saved.r.masterStereo ? 2 : saved.r.ch);
