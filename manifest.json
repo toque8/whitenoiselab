@@ -1,0 +1,18 @@
+{
+"name": "White Noise Lab",
+"short_name": "Noise Lab",
+"description": "Исследовательская лаборатория шума: генерация под настроение и задачу, наложение, свой звук, измерения громкости, спектрограмма,third-octave анализ, тестовые сигналы",
+"start_url": "./",
+"scope": "./",
+"display": "standalone",
+"orientation": "any",
+"background_color": "#141210",
+"theme_color": "#141210",
+"lang": "ru",
+"dir": "ltr",
+"categories": ["utilities", "productivity", "education"],
+"icons": [
+{ "src": "favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+{ "src": "favicon-mask.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "monochrome" }
+]
+}
