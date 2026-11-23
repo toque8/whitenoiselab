@@ -89,7 +89,7 @@ for (let i = 0; i < n; i++) {
 for (let c = 0; c < nch; c++) {
 const st = chans[c];
 let dry = bufs[c][i];
-if (!(dry > -8 && dry < 8)) dry = 0;
+if (!(dry > -1e12 && dry < 1e12)) dry = 0;
 const hp = dry - st.x1 + dcA * st.y1;
 st.x1 = dry; st.y1 = hp;
 const dl = st.dl, di = st.di;
@@ -3307,11 +3307,11 @@ function liveTarget() { return Math.pow(10, state.liveLevel / 20) * (state.volum
 function liveApplyLevel() { if (live.gain) { try { live.gain.gain.setTargetAtTime(liveTarget(), audioCtx.currentTime, 0.08); } catch (e) {} } }
 function liveParams() {
 if (live.kind === 'worklet' && live.node) { try { live.node.port.postMessage({ type: state.liveType, tilt: state.liveTilt, drift: state.liveDrift, reverb: state.liveReverb, preset: state.liveReverbPreset, wet: state.liveReverbWet }); } catch (e) {} }
-else if (live.kind === 'buffer' && live.lfoGain) { try { live.lfoGain.gain.setTargetAtTime(liveTarget() * 0.45 * (state.liveDrift / 100), audioCtx.currentTime, 0.2); } catch (e) {} }
+else if (live.kind === 'buffer' && live.lfoGain) { try { live.lfoGain.gain.setTargetAtTime(0.45 * (state.liveDrift / 100), audioCtx.currentTime, 0.2); } catch (e) {} }
 liveApplyLevel();
 }
 function liveBuildBuffer() {
-const sr = audioCtx.sampleRate, n = Math.floor(sr * 20), fade = Math.floor(sr * 0.3);
+const sr = audioCtx.sampleRate, n = Math.floor(sr * 12), fade = Math.floor(sr * 0.3);
 const b = audioCtx.createBuffer(2, n, sr);
 const bufs = [];
 for (let c = 0; c < 2; c++) {
@@ -3339,18 +3339,27 @@ for (let i = 0; i < fade; i++) { const f = i / fade; d[i] = tmp[i] * g * Math.sq
 }
 return b;
 }
-function liveStartBuffer() {
+function liveStartBuffer(buf, fadeIn) {
 const src = audioCtx.createBufferSource();
-src.buffer = liveBuildBuffer();
+src.buffer = buf || liveBuildBuffer();
 src.loop = true;
+const vg = audioCtx.createGain();
+vg.gain.value = fadeIn ? 0 : 1;
 const lfo = audioCtx.createOscillator();
 lfo.type = 'sine'; lfo.frequency.value = 0.07;
 const lg = audioCtx.createGain();
-lg.gain.value = liveTarget() * 0.45 * (state.liveDrift / 100);
-lfo.connect(lg); lg.connect(live.gain.gain);
-src.connect(live.gain);
+lg.gain.value = fadeIn ? 0 : 0.45 * (state.liveDrift / 100);
+lfo.connect(lg); lg.connect(vg.gain);
+src.connect(vg); vg.connect(live.gain);
 src.start(); lfo.start();
-live.src = src; live.lfo = lfo; live.lfoGain = lg; live.kind = 'buffer';
+live.src = src; live.vg = vg; live.lfo = lfo; live.lfoGain = lg; live.kind = 'buffer';
+if (fadeIn) {
+const tm = audioCtx.currentTime;
+try {
+vg.gain.setTargetAtTime(1, tm, 0.02);
+lg.gain.setTargetAtTime(0.45 * (state.liveDrift / 100), tm, 0.02);
+} catch (e) {}
+}
 }
 function liveStartWorklet() {
 const node = new AudioWorkletNode(audioCtx, 'wnl-live', { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2] });
@@ -3367,12 +3376,13 @@ live.node = node; live.kind = 'worklet';
 function liveTeardownSource() {
 if (live.watch) { clearTimeout(live.watch); live.watch = 0; }
 if (live.rt) { clearTimeout(live.rt); live.rt = 0; }
-const n = live.node, s = live.src, l = live.lfo, lg = live.lfoGain;
-live.node = null; live.src = null; live.lfo = null; live.lfoGain = null; live.kind = 'none';
+const n = live.node, s = live.src, l = live.lfo, lg = live.lfoGain, vg = live.vg;
+live.node = null; live.src = null; live.lfo = null; live.lfoGain = null; live.vg = null; live.kind = 'none';
 try { if (n) n.disconnect(); } catch (e) {}
 try { if (s) { s.stop(); s.disconnect(); } } catch (e) {}
 try { if (l) { l.stop(); l.disconnect(); } } catch (e) {}
 try { if (lg) lg.disconnect(); } catch (e) {}
+try { if (vg) vg.disconnect(); } catch (e) {}
 }
 function liveRms() {
 if (!live.an) return 0;
@@ -3445,19 +3455,23 @@ if (live.kind === 'worklet') { liveParams(); return; }
 if (live.rt) clearTimeout(live.rt);
 live.rt = setTimeout(function () {
 live.rt = 0;
-if (!live.on || live.kind !== 'buffer' || !live.gain) return;
+if (!live.on || live.kind !== 'buffer') return;
+const buf = liveBuildBuffer();
+const old = { src: live.src, lfo: live.lfo, lg: live.lfoGain, vg: live.vg };
+live.src = null; live.lfo = null; live.lfoGain = null; live.vg = null;
+liveStartBuffer(buf, true);
 const tm = audioCtx.currentTime;
 try {
-live.gain.gain.setTargetAtTime(0, tm, 0.015);
-if (live.lfoGain) live.lfoGain.gain.setTargetAtTime(0, tm, 0.015);
+if (old.vg) { old.vg.gain.cancelScheduledValues(tm); old.vg.gain.setValueAtTime(old.vg.gain.value, tm); old.vg.gain.setTargetAtTime(0, tm, 0.05); }
+if (old.lg) { old.lg.gain.cancelScheduledValues(tm); old.lg.gain.setValueAtTime(old.lg.gain.value, tm); old.lg.gain.setTargetAtTime(0, tm, 0.05); }
 } catch (e) {}
 setTimeout(function () {
-if (!live.on || live.kind !== 'buffer') return;
-liveTeardownSource();
-liveStartBuffer();
-liveApplyLevel();
-}, 90);
-}, 150);
+try { if (old.src) { old.src.stop(); old.src.disconnect(); } } catch (e) {}
+try { if (old.lfo) { old.lfo.stop(); old.lfo.disconnect(); } } catch (e) {}
+try { if (old.lg) old.lg.disconnect(); } catch (e) {}
+try { if (old.vg) old.vg.disconnect(); } catch (e) {}
+}, 320);
+}, 80);
 }
 $('livePlay').addEventListener('click', function () { stopLab(); liveStop(); ownAbort(); setTimeout(liveStart, 60); });
 $('liveStop').addEventListener('click', function () { liveStop(); $('stageMeta').textContent = '— · —'; });
