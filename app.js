@@ -2565,8 +2565,7 @@ function mediaMeta() {
 function positionState() {
 if (!('mediaSession' in navigator) || !navigator.mediaSession.setPositionState) return;
 if (mediaOwner !== 'file') {
-try { navigator.mediaSession.setPositionState({ duration: 0, position: 0, playbackRate: 1 }); }
-catch (e) { try { navigator.mediaSession.setPositionState({}); } catch (x) {} }
+try { navigator.mediaSession.setPositionState({ duration: 1, position: 0, playbackRate: 1 }); } catch (e) {}
 return;
 }
 let d = audioEl.duration;
@@ -2576,48 +2575,58 @@ const p = clamp(audioEl.currentTime || 0, 0, d);
 try { navigator.mediaSession.setPositionState({ duration: d, playbackRate: audioEl.playbackRate || 1, position: p }); } catch (e) {}
 }
 function mediaActions() {
-  if (!('mediaSession' in navigator)) return;
-  const file = mediaOwner === 'file';
-  const endless = mediaOwner === 'live';
-  setAction('seekbackward', file ? function (d) { seekBy(-(d && d.seekOffset ? d.seekOffset : 10)); } : null);
-  setAction('seekforward', file ? function (d) { seekBy(d && d.seekOffset ? d.seekOffset : 10); } : null);
-  setAction('seekto', file ? function (d) {
-    if (d && d.seekTime !== undefined && audioEl.duration > 0) {
-      audioEl.currentTime = clamp(d.seekTime, 0, audioEl.duration);
-      seekBar.value = Math.floor(audioEl.currentTime / audioEl.duration * 1000);
-      timeText(); updateMeters(); positionState();
-    }
-  } : null);
-  setAction('previoustrack', endless ? function () { liveCycle(-1); } : (file ? function () { seekBy(-30); } : null));
-  setAction('nexttrack', endless ? function () { liveCycle(1); } : (file ? function () { seekBy(30); } : null));
+if (!('mediaSession' in navigator)) return;
+const file = mediaOwner === 'file';
+const endless = mediaOwner === 'live';
+setAction('seekbackward', file ? function (d) { seekBy(-(d && d.seekOffset ? d.seekOffset : 10)); } : null);
+setAction('seekforward', file ? function (d) { seekBy(d && d.seekOffset ? d.seekOffset : 10); } : null);
+setAction('seekto', file ? function (d) {
+if (d && d.seekTime !== undefined) {
+let dur = audioEl.duration;
+if (!(dur > 0) || !isFinite(dur)) dur = state.duration_s;
+if (dur > 0) {
+audioEl.currentTime = clamp(d.seekTime, 0, dur);
+seekBar.value = Math.floor(audioEl.currentTime / dur * 1000);
+timeText(); updateMeters(); positionState();
+}
+}
+} : null);
+setAction('previoustrack', endless ? function () { liveCycle(-1); } : (file ? function () { seekBy(-30); } : null));
+setAction('nexttrack', endless ? function () { liveCycle(1); } : (file ? function () { seekBy(30); } : null));
 }
 function initMedia() {
-  if (!('mediaSession' in navigator)) return;
-  setAction('play', function () {
-    if (live.on) { if (live.paused) liveResume(); return; }
-    if (labSession) { if (labSession.paused) labResume(); return; }
-    if (state.url) { if (audioEl.paused) togglePlay(); return; }
-    if (lastSource === 'live') { liveStart(); return; }
-    const b = $(state.labTool + 'Play'); if (b) b.click();
-  });
-  setAction('pause', function () {
-    if (live.on) { livePause(); return; }
-    if (labSession) { labPause(); return; }
-    if (!audioEl.paused) audioEl.pause();
-  });
-  setAction('stop', function () {
-    if (live.on) { liveStop(); $('stageMeta').textContent = '— · —'; return; }
-    if (labSession) { stopLab(); resetLab(); $('stageMeta').textContent = '— · —'; return; }
-    if (!audioEl.paused) audioEl.pause();
-    if (audioEl.duration > 0) { audioEl.currentTime = 0; seekBar.value = 0; timeText(); }
-    mediaOwner = state.url ? 'file' : 'none';
-    mediaMeta();
-  });
-  mediaActions();
-  if (mediaTimer) { clearInterval(mediaTimer); mediaTimer = 0; }
-  mediaTimer = setInterval(function () {
-  if (mediaOwner === 'file' && !audioEl.paused) positionState();
-  }, 1000);
+if (!('mediaSession' in navigator)) return;
+setAction('play', function () {
+if (live.on) { if (live.paused) liveResume(); return; }
+if (labSession) { if (labSession.paused) labResume(); return; }
+if (state.url) { if (audioEl.paused) togglePlay(); return; }
+if (lastSource === 'live') { liveStart(); return; }
+const b = $(state.labTool + 'Play'); if (b) b.click();
+mediaMeta();
+});
+setAction('pause', function () {
+if (live.on) { livePause(); }
+else if (labSession) { labPause(); }
+else if (!audioEl.paused) { audioEl.pause(); }
+mediaMeta();
+positionState();
+});
+setAction('stop', function () {
+if (live.on) { liveStop(); $('stageMeta').textContent = '— · —'; return; }
+if (labSession) { stopLab(); resetLab(); $('stageMeta').textContent = '— · —'; return; }
+if (!audioEl.paused) audioEl.pause();
+let d = audioEl.duration;
+if (!(d > 0) || !isFinite(d)) d = state.duration_s;
+if (d > 0) { audioEl.currentTime = 0; seekBar.value = 0; timeText(); }
+mediaOwner = state.url ? 'file' : 'none';
+mediaMeta();
+positionState();
+});
+mediaActions();
+if (mediaTimer) { clearInterval(mediaTimer); mediaTimer = 0; }
+mediaTimer = setInterval(function () {
+if (mediaOwner === 'file' && !audioEl.paused) positionState();
+}, 500);
 }
 STR.focusMode = ['Фокус-режим', 'Focus mode'];
 const coarse = (function () { try { if (matchMedia('(pointer: coarse)').matches) return true; } catch (e) {} return /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent); })();
