@@ -2504,6 +2504,28 @@ audioEl.currentTime = clamp(audioEl.currentTime + d, 0, Math.max(0, dur - 0.05))
 seekBar.value = Math.floor(audioEl.currentTime / dur * 1000);
 timeText(); updateMeters(); if (state.view === 'wave' || state.view === 'loud') renderView(); positionState();
 }
+$('playBtn').addEventListener('click', togglePlay);
+seekBar.addEventListener('pointerdown', function () { state.seeking = true; });
+seekBar.addEventListener('input', function () {
+let dur = audioEl.duration;
+if (!(dur > 0) || !isFinite(dur)) dur = state.duration_s;
+if (dur > 0) audioEl.currentTime = seekBar.value / 1000 * dur;
+});
+['pointerup', 'pointercancel', 'change'].forEach(function (e) {
+seekBar.addEventListener(e, function () { state.seeking = false; });
+});
+window.addEventListener('pointerup', function () { state.seeking = false; });
+$('volume').addEventListener('input', function () {
+state.volume = parseInt($('volume').value, 10);
+audioEl.volume = state.volume / 100;
+$('volNum').textContent = state.volume + '%';
+if (live.on) liveApplyLevel();
+if (labSession && !labSession.paused) {
+try { labSession.master.gain.setTargetAtTime(state.volume / 100, audioCtx.currentTime, 0.05); } catch (e) {}
+}
+save();
+});
+$('loopBtn').addEventListener('click', function () { setLoop(!state.loop); });
 function artwork() {
 try {
 const cv = document.createElement('canvas'); cv.width = 512; cv.height = 512;
