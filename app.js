@@ -3413,6 +3413,10 @@ function attachTimer(s, min, el) {
   s.timerEnd = Date.now() + min * 60000;
   runTimer(s);
 }
+$('testPlay').addEventListener('click', async function () {
+stopLab(); liveStop(); ownAbort(); await ensureCtx();
+const s = baseSess('test');
+let cur = null;
 function play(tp) {
 const src = audioCtx.createBufferSource(); src.buffer = loopBuf(tp); src.loop = true;
 const g = audioCtx.createGain(); g.gain.value = 0;
