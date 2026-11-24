@@ -2440,7 +2440,7 @@ ws(0, 'RIFF'); dv.setUint32(4, size - 8, true); ws(8, 'WAVE'); ws(12, 'fmt ');
 dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
 dv.setUint32(24, sr, true); dv.setUint32(28, sr * 2, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
 ws(36, 'data'); dv.setUint32(40, n * 2, true);
-for (let i = 0; i < n; i++) dv.setInt16(44 + i * 2, i % 2 ? 1 : -1, true);
+for (let i = 0; i < n; i++) dv.setInt16(44 + i * 2, (Math.floor(i / 20) % 2 ? 300 : -300), true);
 return URL.createObjectURL(new Blob([ab], { type: 'audio/wav' }));
 })();
 document.body.appendChild(keepAlive);
