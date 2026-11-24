@@ -2677,27 +2677,82 @@ function focusToggle() {
   if (state.focus) enterFocus(); else exitFocus();
 }
 function focusStyle() {
-if ($('focusStyle')) return;
-const s = document.createElement('style');
-s.id = 'focusStyle';
-s.textContent = '.focus-btn{position:fixed;right:calc(12px + env(safe-area-inset-right));top:calc(12px + env(safe-area-inset-top));z-index:80;width:30px;height:30px;box-sizing:border-box;border-radius:6px;border:1px solid rgba(193,154,107,.45);background:rgba(20,18,16,.35);-webkit-tap-highlight-color:transparent}.focus-btn.active{border-color:rgba(212,173,125,.75);background:rgba(193,154,107,.16)}html.wnl-focus{background:#141210}';
-document.head.appendChild(s);
+  const old = $('focusStyle');
+  if (old) old.remove();
+
+  const s = document.createElement('style');
+  s.id = 'focusStyle';
+  s.textContent = `
+    .focus-btn {
+      position: fixed;
+      right: calc(12px + env(safe-area-inset-right));
+      top: calc(12px + env(safe-area-inset-top));
+      z-index: 9999;
+      width: 30px;
+      height: 30px;
+      box-sizing: border-box;
+      border-radius: 6px;
+      border: 1px solid rgba(193,154,107,.45);
+      background: rgba(20,18,16,.35);
+      -webkit-tap-highlight-color: transparent;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      margin: 0;
+      cursor: pointer;
+      touch-action: manipulation;
+      -webkit-user-select: none;
+      user-select: none;
+      line-height: 0;
+    }
+
+    .focus-btn::before {
+      content: "";
+      width: 12px;
+      height: 12px;
+      box-sizing: border-box;
+      background: #fff;
+      border-radius: 2px;
+    }
+
+    .focus-btn.active {
+      border-color: rgba(212,173,125,.75);
+      background: rgba(193,154,107,.16);
+    }
+
+    .focus-btn:focus-visible {
+      outline: 2px solid rgba(232,193,145,.8);
+      outline-offset: 2px;
+    }
+
+    html.wnl-focus {
+      background: #141210;
+    }
+  `;
+  document.head.appendChild(s);
 }
+
 function focusBuild() {
-if ($('focusBtn') || !canFull) return;
-try { if (!matchMedia('(pointer: coarse)').matches) return; } catch (e) { return; }
-const ua = navigator.userAgent || '';
-const small = Math.min(window.screen.width || 10000, window.screen.height || 10000) < 900;
-if (!/Android|iPhone|iPad|iPod|Mobile/i.test(ua) && !small) return;
-const b = document.createElement('button');
-b.id = 'focusBtn';
-b.type = 'button';
-b.className = 'focus-btn';
-b.setAttribute('aria-label', t('focusMode'));
-b.title = t('focusMode');
-document.body.appendChild(b);
-b.addEventListener('click', focusToggle);
-focusSync();
+  if ($('focusBtn') || !canFull) return;
+  try { if (!matchMedia('(pointer: coarse)').matches) return; } catch (e) { return; }
+  const ua = navigator.userAgent || '';
+  const small = Math.min(window.screen.width || 10000, window.screen.height || 10000) < 900;
+  if (!/Android|iPhone|iPad|iPod|Mobile/i.test(ua) && !small) return;
+
+  focusStyle(); 
+
+  const b = document.createElement('button');
+  b.id = 'focusBtn';
+  b.type = 'button';
+  b.className = 'focus-btn';
+  b.setAttribute('aria-label', t('focusMode'));
+  b.title = t('focusMode');
+
+  document.documentElement.appendChild(b);
+
+  b.addEventListener('click', focusToggle);
+  focusSync();
 }
 function stageMetaText() {
 if (!state.meta) return '— · —';
@@ -3407,7 +3462,76 @@ function attachTimer(s, min, el) {
   s.timerEnd = Date.now() + min * 60000;
   runTimer(s);
 }
+$('notchPlay').addEventListener('click', async function () {
+if (labSession && labSession.paused && labSession.kind === 'notch') { labResume(); return; }
+stopLab(); liveStop(); ownAbort(); await ensureCtx();
+const s = baseSess('notch');
+const src = audioCtx.createBufferSource(); src.buffer = loopBuf('pink'); src.loop = true;
+const nf = audioCtx.createBiquadFilter(); nf.type = 'notch'; nf.frequency.value = state.notchFreq; nf.Q.value = state.notchQ;
+const g = audioCtx.createGain(); g.gain.value = 2.2;
+src.connect(nf); nf.connect(g); g.connect(s.master); src.start();
+s.src.add(src); s.nodes.add(nf); s.nodes.add(g); s.notch = nf;
+labSession = s; attachTimer(s, state.notchTimer, $('notchCountdown')); showStop('notch');
+$('stageMeta').textContent = tf('notchMeta', state.notchFreq, num(state.notchQ, 1));
+mediaMeta();
+});
+$('notchStop').addEventListener('click', function () { stopLab(); resetLab(); $('stageMeta').textContent = '— · —'; });
+$('binPlay').addEventListener('click', async function () {
+if (labSession && labSession.paused && labSession.kind === 'bin') { labResume(); return; }
+stopLab(); liveStop(); ownAbort(); await ensureCtx();
+const s = baseSess('bin');
+const bed = audioCtx.createBufferSource(); bed.buffer = loopBuf('pink'); bed.loop = true;
+const bg = audioCtx.createGain(); bg.gain.value = 0.45; bed.connect(bg); bg.connect(s.master);
+const oL = audioCtx.createOscillator(); oL.frequency.value = state.binBase;
+const oR = audioCtx.createOscillator(); oR.frequency.value = state.binBase + state.binBeat;
+const pL = audioCtx.createStereoPanner(); pL.pan.value = -1;
+const pR = audioCtx.createStereoPanner(); pR.pan.value = 1;
+const og = audioCtx.createGain(); og.gain.value = 0.5;
+oL.connect(pL); pL.connect(og); oR.connect(pR); pR.connect(og); og.connect(s.master);
+bed.start(); oL.start(); oR.start();
+s.src.add(bed); s.src.add(oL); s.src.add(oR);
+[bg, pL, pR, og].forEach(function (n) { s.nodes.add(n); });
+s.oscL = oL; s.oscR = oR;
+labSession = s; attachTimer(s, state.binTimer, $('binCountdown')); showStop('bin');
+$('stageMeta').textContent = tf('binMeta', state.binBase, num(state.binBeat, 1));
+mediaMeta();
+});
+$('binStop').addEventListener('click', function () { stopLab(); resetLab(); $('stageMeta').textContent = '— · —'; });
+$('rot8dPlay').addEventListener('click', async function () {
+if (labSession && labSession.paused && labSession.kind === 'rot8d') { labResume(); return; }
+stopLab(); liveStop(); ownAbort(); await ensureCtx();
+const s = baseSess('rot8d');
+const src = audioCtx.createBufferSource(); src.buffer = loopBuf('pink'); src.loop = true;
+const p = audioCtx.createPanner();
+p.panningModel = 'HRTF'; p.distanceModel = 'linear'; p.refDistance = 1; p.maxDistance = 10; p.rolloffFactor = 0;
+const g = audioCtx.createGain(); g.gain.value = 2.2;
+src.connect(p); p.connect(g); g.connect(s.master);
+const f = state.rot8dSpeed * 0.06;
+const cosWave = audioCtx.createPeriodicWave(new Float32Array([0, 1]), new Float32Array([0, 0]));
+const ox = audioCtx.createOscillator(); ox.setPeriodicWave(cosWave); ox.frequency.value = f;
+const oz = audioCtx.createOscillator(); oz.type = 'sine'; oz.frequency.value = f;
+const gx = audioCtx.createGain(); gx.gain.value = 2;
+const gz = audioCtx.createGain(); gz.gain.value = 2;
+ox.connect(gx); oz.connect(gz);
+let ok = false;
+if (p.positionX) { try { gx.connect(p.positionX); gz.connect(p.positionZ); ok = true; } catch (e) { ok = false; } }
+src.start(); ox.start(); oz.start();
+s.src.add(src); s.src.add(ox); s.src.add(oz);
+[p, g, gx, gz].forEach(function (n) { s.nodes.add(n); });
+s.oscX = ox; s.oscZ = oz;
+if (!ok) {
+let ang = 0, last = performance.now();
+const step = function () { if (labSession !== s || s.paused) { s.raf = 0; return; } const now = performance.now(); ang += state.rot8dSpeed * 0.6 * Math.min(0.1, (now - last) / 1000); last = now; try { p.setPosition(Math.cos(ang) * 2, 0, Math.sin(ang) * 2); } catch (e) {} s.raf = requestAnimationFrame(step); };
+s.spin = function () { last = performance.now(); if (!s.raf) s.raf = requestAnimationFrame(step); };
+s.spin();
+}
+labSession = s; showStop('rot8d');
+$('stageMeta').textContent = tf('rotMeta', state.rot8dSpeed);
+mediaMeta();
+});
+$('rot8dStop').addEventListener('click', function () { stopLab(); resetLab(); $('stageMeta').textContent = '— · —'; });
 $('testPlay').addEventListener('click', async function () {
+if (labSession && labSession.paused && labSession.kind === 'test') { labResume(); return; }
 stopLab(); liveStop(); ownAbort(); await ensureCtx();
 const s = baseSess('test');
 let cur = null;
