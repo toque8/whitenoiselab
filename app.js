@@ -2465,13 +2465,6 @@ function holderStopSoon() {
 }
 document.body.appendChild(anchor);
 document.body.appendChild(audioEl);
-function keepAliveOff(delay) {
-if (keepAliveT) clearTimeout(keepAliveT);
-keepAliveT = setTimeout(function () {
-keepAliveT = 0;
-if (!live.on && !labSession && !keepAlive.paused) keepAlive.pause();
-}, delay || 0);
-}
 function playIcon(p) { $('playIcon').innerHTML = p ? '<path d="M6 5h4v14H6zM14 5h4v14h-4z"/>' : '<path d="M8 5v14l11-7z"/>'; $('playBtn').setAttribute('aria-label', p ? t('pause') : t('play')); }
 function timeText() { $('timeDisplay').textContent = fmtTime(audioEl.currentTime) + ' / ' + fmtTime(audioEl.duration || state.duration_s); }
 audioEl.addEventListener('timeupdate', function () {
@@ -2570,15 +2563,17 @@ function mediaMeta() {
   mediaActions();
 }
 function positionState() {
-  if (!('mediaSession' in navigator) || !navigator.mediaSession.setPositionState) return;
-  if (mediaOwner !== 'file') {
-    try { navigator.mediaSession.setPositionState({ duration: 0, position: 0, playbackRate: 1 }); }
-    catch (e) { try { navigator.mediaSession.setPositionState({}); } catch (x) {} }
-    return;
-  }
-  const d = audioEl.duration;
-  if (!(d > 0) || !isFinite(d)) return;
-  try { navigator.mediaSession.setPositionState({ duration: d, playbackRate: audioEl.playbackRate || 1, position: clamp(audioEl.currentTime, 0, d) }); } catch (e) {}
+if (!('mediaSession' in navigator) || !navigator.mediaSession.setPositionState) return;
+if (mediaOwner !== 'file') {
+try { navigator.mediaSession.setPositionState({ duration: 0, position: 0, playbackRate: 1 }); }
+catch (e) { try { navigator.mediaSession.setPositionState({}); } catch (x) {} }
+return;
+}
+let d = audioEl.duration;
+if (!(d > 0) || !isFinite(d)) d = state.duration_s;
+if (!(d > 0) || !isFinite(d)) return;
+const p = clamp(audioEl.currentTime || 0, 0, d);
+try { navigator.mediaSession.setPositionState({ duration: d, playbackRate: audioEl.playbackRate || 1, position: p }); } catch (e) {}
 }
 function mediaActions() {
   if (!('mediaSession' in navigator)) return;
@@ -2619,8 +2614,9 @@ function initMedia() {
     mediaMeta();
   });
   mediaActions();
-  if (!mediaTimer) mediaTimer = setInterval(function () {
-    if (mediaOwner === 'file' && !audioEl.paused) positionState();
+  if (mediaTimer) { clearInterval(mediaTimer); mediaTimer = 0; }
+  mediaTimer = setInterval(function () {
+  if (mediaOwner === 'file' && !audioEl.paused) positionState();
   }, 1000);
 }
 STR.focusMode = ['Фокус-режим', 'Focus mode'];
@@ -2652,8 +2648,8 @@ async function enterFocus() {
       else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
     }
   } catch (e) {}
-  releaseOrientation();
-  document.documentElement.classList.toggle('wnl-focus', state.focus);
+    try { if (screen.orientation && screen.orientation.lock) await screen.orientation.lock(screen.orientation.type); } catch (e) {}
+    document.documentElement.classList.toggle('wnl-focus', state.focus);
   if (state.focus) grabWake();
   focusSync();
   return focusActive();
@@ -2680,30 +2676,28 @@ function focusToggle() {
   save();
   if (state.focus) enterFocus(); else exitFocus();
 }
-function focusRearm() {
-  if (!state.focus || !canFull || !coarse || focusActive()) return;
-  const now = Date.now();
-  if (now - focusArm < 1200) return;
-  focusArm = now;
-  enterFocus();
-}
 function focusStyle() {
-  if ($('focusStyle')) return;
-  const s = document.createElement('style');
-  s.id = 'focusStyle';
-  s.textContent = '.focus-btn{display:inline-flex;align-items:center;justify-content:center;width:34px;height:34px;padding:0;border-radius:10px;border:1px solid rgba(193,154,107,.28);background:rgba(30,26,22,.6);color:#a89b8c;cursor:pointer;-webkit-tap-highlight-color:transparent}.focus-btn.active{color:#e8c88c;border-color:rgba(212,173,125,.6);background:rgba(193,154,107,.14)}.focus-btn.floating{position:fixed;right:12px;top:calc(12px + env(safe-area-inset-top));z-index:60}html.wnl-focus{background:#141210}html.wnl-focus body{overscroll-behavior:none}';
-  document.head.appendChild(s);
+if ($('focusStyle')) return;
+const s = document.createElement('style');
+s.id = 'focusStyle';
+s.textContent = '.focus-btn{position:fixed;right:calc(12px + env(safe-area-inset-right));top:calc(12px + env(safe-area-inset-top));z-index:80;width:30px;height:30px;box-sizing:border-box;border-radius:6px;border:1px solid rgba(193,154,107,.45);background:rgba(20,18,16,.35);-webkit-tap-highlight-color:transparent}.focus-btn.active{border-color:rgba(212,173,125,.75);background:rgba(193,154,107,.16)}html.wnl-focus{background:#141210}';
+document.head.appendChild(s);
 }
 function focusBuild() {
-  if ($('focusBtn') || !canFull || !coarse) return;
-  const b = document.createElement('button');
-  b.id = 'focusBtn'; b.type = 'button'; b.className = 'focus-btn';
-  b.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
-  const lang = $('langToggle');
-  if (lang && lang.parentNode) lang.parentNode.insertBefore(b, lang);
-  else { b.classList.add('floating'); document.body.appendChild(b); }
-  b.addEventListener('click', focusToggle);
-  focusSync();
+if ($('focusBtn') || !canFull) return;
+try { if (!matchMedia('(pointer: coarse)').matches) return; } catch (e) { return; }
+const ua = navigator.userAgent || '';
+const small = Math.min(window.screen.width || 10000, window.screen.height || 10000) < 900;
+if (!/Android|iPhone|iPad|iPod|Mobile/i.test(ua) && !small) return;
+const b = document.createElement('button');
+b.id = 'focusBtn';
+b.type = 'button';
+b.className = 'focus-btn';
+b.setAttribute('aria-label', t('focusMode'));
+b.title = t('focusMode');
+document.body.appendChild(b);
+b.addEventListener('click', focusToggle);
+focusSync();
 }
 function stageMetaText() {
 if (!state.meta) return '— · —';
@@ -3592,7 +3586,13 @@ async function liveStart() {
     live.gain.connect(live.an);
     live.an.connect(safeIn);
     live.on = true;
-    let useWorklet = await ensureWorklet();
+    let useWorklet = false;
+    try {
+    useWorklet = await Promise.race([
+    ensureWorklet(),
+    new Promise(function (res) { setTimeout(function () { res(false); }, 140); })
+    ]);
+    } catch (e) { useWorklet = false; }
     if (useWorklet) { try { liveStartWorklet(); } catch (e) { useWorklet = false; } }
     if (!useWorklet) liveStartBuffer();
     liveApplyLevel();
@@ -3604,7 +3604,7 @@ async function liveStart() {
       live.watch = setTimeout(function () {
         if (!live.on || live.paused || live.kind !== 'worklet') return;
         if (liveRms() < 1e-6) { liveTeardownSource(); liveStartBuffer(); liveApplyLevel(); }
-      }, 900);
+      }, 300);
     }
   } catch (e) {
     live.on = false; live.paused = false;
@@ -3694,7 +3694,7 @@ try { if (old.vg) old.vg.disconnect(); } catch (e) {}
 }
 $('livePlay').addEventListener('click', function () {
   if (live.on && live.paused) { liveResume(); return; }
-  stopLab(); liveStop(); ownAbort(); setTimeout(liveStart, 60);
+  stopLab(); liveStop(); ownAbort(); setTimeout(liveStart, 25);
 });
 $('liveStop').addEventListener('click', function () { liveStop(); $('stageMeta').textContent = '— · —'; });
 
@@ -4226,9 +4226,9 @@ initMedia();
 focusStyle();
 focusBuild();
 releaseOrientation();
-document.addEventListener('fullscreenchange', function () { releaseOrientation(); focusSync(); });
+document.addEventListener('fullscreenchange', function () { if (!focusActive()) releaseOrientation(); focusSync(); });
 document.addEventListener('webkitfullscreenchange', function () { releaseOrientation(); focusSync(); });
-document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'visible') { releaseOrientation(); if (state.focus) grabWake(); } });
+document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'visible') { if (!focusActive()) releaseOrientation(); if (state.focus) grabWake(); } });
 window.addEventListener('orientationchange', releaseOrientation);
 $('tabs').querySelectorAll('.tab').forEach(function (x) { const on = x.dataset.tab === state.mode; x.classList.toggle('active', on); x.setAttribute('aria-selected', on ? 'true' : 'false'); });
 $('generatorSidebar').classList.toggle('hidden', state.mode !== 'generate');
