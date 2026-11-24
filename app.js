@@ -2497,25 +2497,13 @@ function togglePlay() {
   } else audioEl.pause();
 }
 function seekBy(d) {
-if (!(audioEl.duration > 0)) return;
-audioEl.currentTime = clamp(audioEl.currentTime + d, 0, Math.max(0, audioEl.duration - 0.05));
-seekBar.value = Math.floor(audioEl.currentTime / audioEl.duration * 1000);
+let dur = audioEl.duration;
+if (!(dur > 0) || !isFinite(dur)) dur = state.duration_s;
+if (!(dur > 0)) return;
+audioEl.currentTime = clamp(audioEl.currentTime + d, 0, Math.max(0, dur - 0.05));
+seekBar.value = Math.floor(audioEl.currentTime / dur * 1000);
 timeText(); updateMeters(); if (state.view === 'wave' || state.view === 'loud') renderView(); positionState();
 }
-$('playBtn').addEventListener('click', togglePlay);
-seekBar.addEventListener('pointerdown', function () { state.seeking = true; });
-seekBar.addEventListener('input', function () { if (audioEl.duration > 0) audioEl.currentTime = seekBar.value / 1000 * audioEl.duration; });
-['pointerup', 'pointercancel', 'change'].forEach(function (e) { seekBar.addEventListener(e, function () { state.seeking = false; }); });
-window.addEventListener('pointerup', function () { state.seeking = false; });
-$('volume').addEventListener('input', function () {
-state.volume = parseInt($('volume').value, 10);
-audioEl.volume = state.volume / 100;
-$('volNum').textContent = state.volume + '%';
-if (live.on) liveApplyLevel();
-if (labSession && !labSession.paused) { try { labSession.master.gain.setTargetAtTime(state.volume / 100, audioCtx.currentTime, 0.05); } catch (e) {} }
-save();
-});
-$('loopBtn').addEventListener('click', function () { setLoop(!state.loop); });
 function artwork() {
 try {
 const cv = document.createElement('canvas'); cv.width = 512; cv.height = 512;
@@ -2565,7 +2553,7 @@ function mediaMeta() {
 function positionState() {
 if (!('mediaSession' in navigator) || !navigator.mediaSession.setPositionState) return;
 if (mediaOwner !== 'file') {
-try { navigator.mediaSession.setPositionState({ duration: 1, position: 0, playbackRate: 1 }); } catch (e) {}
+try { navigator.mediaSession.setPositionState(null); } catch (e) {}
 return;
 }
 let d = audioEl.duration;
@@ -2605,9 +2593,9 @@ const b = $(state.labTool + 'Play'); if (b) b.click();
 mediaMeta();
 });
 setAction('pause', function () {
-if (live.on) { livePause(); }
-else if (labSession) { labPause(); }
-else if (!audioEl.paused) { audioEl.pause(); }
+if (live.on) { livePause(); return; }
+if (labSession) { labPause(); return; }
+if (!audioEl.paused) audioEl.pause();
 mediaMeta();
 positionState();
 });
@@ -2626,7 +2614,7 @@ mediaActions();
 if (mediaTimer) { clearInterval(mediaTimer); mediaTimer = 0; }
 mediaTimer = setInterval(function () {
 if (mediaOwner === 'file' && !audioEl.paused) positionState();
-}, 500);
+}, 250);
 }
 STR.focusMode = ['Фокус-режим', 'Focus mode'];
 const coarse = (function () { try { if (matchMedia('(pointer: coarse)').matches) return true; } catch (e) {} return /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent); })();
@@ -2687,7 +2675,7 @@ function focusToggle() {
 }
 function focusStyle() {
   const old = $('focusStyle');
-  if (old) old.remove();
+  if (old) old.remove(); 
 
   const s = document.createElement('style');
   s.id = 'focusStyle';
@@ -2716,18 +2704,25 @@ function focusStyle() {
       line-height: 0;
     }
 
-    .focus-btn::before {
-      content: "";
-      width: 12px;
-      height: 12px;
-      box-sizing: border-box;
-      background: #fff;
-      border-radius: 2px;
+    .focus-btn svg {
+      width: 14px;
+      height: 14px;
+      display: block;
+      fill: none;
+      stroke: #ffffff;
+      stroke-width: 1.5;
+      stroke-linecap: square;
+      stroke-linejoin: miter;
+      pointer-events: none;
     }
 
     .focus-btn.active {
       border-color: rgba(212,173,125,.75);
       background: rgba(193,154,107,.16);
+    }
+
+    .focus-btn.active svg {
+      stroke: rgba(232,193,145,.98);
     }
 
     .focus-btn:focus-visible {
@@ -2749,7 +2744,7 @@ function focusBuild() {
   const small = Math.min(window.screen.width || 10000, window.screen.height || 10000) < 900;
   if (!/Android|iPhone|iPad|iPod|Mobile/i.test(ua) && !small) return;
 
-  focusStyle(); 
+  focusStyle();
 
   const b = document.createElement('button');
   b.id = 'focusBtn';
@@ -2757,6 +2752,14 @@ function focusBuild() {
   b.className = 'focus-btn';
   b.setAttribute('aria-label', t('focusMode'));
   b.title = t('focusMode');
+
+  b.innerHTML =
+    '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">' +
+      '<polyline points="4,10 4,4 10,4"/>' +   // верх-лево
+      '<polyline points="14,4 20,4 20,10"/>' + // верх-право
+      '<polyline points="20,14 20,20 14,20"/>' + // низ-право
+      '<polyline points="10,20 4,20 4,14"/>' +  // низ-лево
+    '</svg>';
 
   document.documentElement.appendChild(b);
 
