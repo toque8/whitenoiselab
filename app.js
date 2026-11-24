@@ -2575,14 +2575,13 @@ function mediaMeta() {
 function positionState() {
 if (!('mediaSession' in navigator) || !navigator.mediaSession.setPositionState) return;
 if (mediaOwner !== 'file') {
-try { navigator.mediaSession.setPositionState(null); } catch (e) {}
+try { navigator.mediaSession.setPositionState({ duration: 0.001, position: 0, playbackRate: 1 }); } catch (e) {}
 return;
 }
 let d = audioEl.duration;
 if (!(d > 0) || !isFinite(d)) d = state.duration_s;
 if (!(d > 0) || !isFinite(d)) return;
-const p = clamp(audioEl.currentTime || 0, 0, d);
-try { navigator.mediaSession.setPositionState({ duration: d, playbackRate: audioEl.playbackRate || 1, position: p }); } catch (e) {}
+try { navigator.mediaSession.setPositionState({ duration: d, playbackRate: audioEl.playbackRate || 1, position: clamp(audioEl.currentTime || 0, 0, d) }); } catch (e) {}
 }
 function mediaActions() {
 if (!('mediaSession' in navigator)) return;
