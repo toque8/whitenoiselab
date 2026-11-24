@@ -1752,7 +1752,7 @@ if (state.lang !== 'en') state.lang = 'ru';
 }
 load();
 
-let audioCtx = null, labSession = null, safeIn = null;
+let audioCtx = null, labSession = null, safeIn = null, safeOut = null;
 let worker = null, workerOk = false, jobId = 0, pending = null;
 let rafMeters = 0, resizeRaf = 0, progressTimer = null, progressP = 0, railW = 0;
 let spectroImg = null, spectroDirty = true, curveLastIdx = -1, curveLastVal = 0.5, curveDrawing = false;
@@ -2427,27 +2427,38 @@ const audioEl = new Audio();
 audioEl.preload = 'auto';
 audioEl.setAttribute('playsinline', '');
 const seekBar = $('seekBar');
-let keepAliveT = 0, mediaTimer = 0, lastSource = 'file';
+let mediaTimer = 0, lastSource = 'file', holderT = 0, bridge = null, bridgeOn = false;
 const keepAlive = new Audio();
-keepAlive.loop = true;
 keepAlive.preload = 'auto';
 keepAlive.setAttribute('playsinline', '');
-keepAlive.src = (function () {
-const sr = 8000, n = sr * 2, size = 44 + n * 2;
-const ab = new ArrayBuffer(size), dv = new DataView(ab);
-const ws = function (o, s) { for (let i = 0; i < s.length; i++) dv.setUint8(o + i, s.charCodeAt(i)); };
-ws(0, 'RIFF'); dv.setUint32(4, size - 8, true); ws(8, 'WAVE'); ws(12, 'fmt ');
-dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
-dv.setUint32(24, sr, true); dv.setUint32(28, sr * 2, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
-ws(36, 'data'); dv.setUint32(40, n * 2, true);
-for (let i = 0; i < n; i++) dv.setInt16(44 + i * 2, (Math.floor(i / 20) % 2 ? 300 : -300), true);
-return URL.createObjectURL(new Blob([ab], { type: 'audio/wav' }));
-})();
 document.body.appendChild(keepAlive);
 document.body.appendChild(audioEl);
-function keepAliveOn() {
-if (keepAliveT) { clearTimeout(keepAliveT); keepAliveT = 0; }
-if (keepAlive.paused) { const p = keepAlive.play(); if (p && p.catch) p.catch(function () {}); }
+function holderStart() {
+if (holderT) { clearTimeout(holderT); holderT = 0; }
+if (!audioCtx || !safeOut || !audioCtx.createMediaStreamDestination || !('srcObject' in keepAlive)) return;
+try {
+if (!bridge) bridge = audioCtx.createMediaStreamDestination();
+if (!bridgeOn) {
+try { safeOut.disconnect(audioCtx.destination); } catch (e) {}
+safeOut.connect(bridge);
+bridgeOn = true;
+}
+if (keepAlive.srcObject !== bridge.stream) keepAlive.srcObject = bridge.stream;
+const p = keepAlive.play();
+if (p && p.catch) p.catch(holderStop);
+} catch (e) { holderStop(); }
+}
+function holderStop() {
+if (holderT) { clearTimeout(holderT); holderT = 0; }
+try { keepAlive.pause(); } catch (e) {}
+try { keepAlive.srcObject = null; } catch (e) {}
+if (!audioCtx || !safeOut) return;
+if (bridgeOn) { try { safeOut.disconnect(bridge); } catch (e) {} bridgeOn = false; }
+try { safeOut.connect(audioCtx.destination); } catch (e) {}
+}
+function holderStopSoon() {
+if (holderT) clearTimeout(holderT);
+holderT = setTimeout(function () { holderT = 0; if (!live.on && !labSession) holderStop(); }, 350);
 }
 function keepAliveOff(delay) {
 if (keepAliveT) clearTimeout(keepAliveT);
@@ -2459,11 +2470,10 @@ if (!live.on && !labSession && !keepAlive.paused) keepAlive.pause();
 function playIcon(p) { $('playIcon').innerHTML = p ? '<path d="M6 5h4v14H6zM14 5h4v14h-4z"/>' : '<path d="M8 5v14l11-7z"/>'; $('playBtn').setAttribute('aria-label', p ? t('pause') : t('play')); }
 function timeText() { $('timeDisplay').textContent = fmtTime(audioEl.currentTime) + ' / ' + fmtTime(audioEl.duration || state.duration_s); }
 audioEl.addEventListener('timeupdate', function () { timeText(); if (!state.seeking && audioEl.duration > 0) seekBar.value = Math.floor(audioEl.currentTime / audioEl.duration * 1000); positionState(); });
-audioEl.addEventListener('loadedmetadata', function () { timeText(); seekBar.disabled = false; mediaMeta(); });
-audioEl.addEventListener('durationchange', function () { mediaMeta(); });
+audioEl.addEventListener('loadedmetadata', function () { timeText(); seekBar.disabled = false; positionState(); });
 audioEl.addEventListener('seeked', function () { positionState(); });
-audioEl.addEventListener('play', function () { playIcon(true); keepAliveOff(0); if (!rafMeters) rafMeters = requestAnimationFrame(meterLoop); mediaMeta(); });
-audioEl.addEventListener('pause', function () { playIcon(false); updateMeters(); mediaMeta(); });
+audioEl.addEventListener('play', function () { playIcon(true); if (!rafMeters) rafMeters = requestAnimationFrame(meterLoop); mediaMeta(); positionState(); });
+audioEl.addEventListener('pause', function () { playIcon(false); updateMeters(); mediaMeta(); positionState(); });
 audioEl.addEventListener('ended', function () { playIcon(false); updateMeters(); mediaMeta(); });
 audioEl.addEventListener('error', function () { if (state.url) pFail(t('playFail')); });
 function togglePlay() {
@@ -2471,7 +2481,7 @@ if (!state.url) return;
 if (audioEl.paused) {
 if (live.on) liveStop();
 if (labSession) { stopLab(); $('stageMeta').textContent = stageMetaText(); }
-keepAliveOff(0);
+holderStop();
 lastSource = 'file';
 const p = audioEl.play(); if (p && p.catch) p.catch(function () { pFail(t('playBlocked')); });
 } else audioEl.pause();
@@ -2527,16 +2537,13 @@ album: (live.on || labSession) ? '∞' : fmtTime(state.duration_s) + ' · ' + st
 artwork: artUrl ? [{ src: artUrl, sizes: '512x512', type: 'image/png' }] : []
 });
 } catch (e) {}
-positionState();
 }
 function positionState() {
 if (!('mediaSession' in navigator) || !navigator.mediaSession.setPositionState) return;
-try {
-if (live.on || labSession) { navigator.mediaSession.setPositionState(null); return; }
+if (live.on || labSession || bridgeOn) return;
 const d = audioEl.duration;
-if (!(d > 0) || !isFinite(d)) { navigator.mediaSession.setPositionState(null); return; }
-navigator.mediaSession.setPositionState({ duration: d, playbackRate: audioEl.playbackRate || 1, position: clamp(audioEl.currentTime, 0, d) });
-} catch (e) {}
+if (!(d > 0) || !isFinite(d)) return;
+try { navigator.mediaSession.setPositionState({ duration: d, playbackRate: audioEl.playbackRate || 1, position: clamp(audioEl.currentTime, 0, d) }); } catch (e) {}
 }
 function initMedia() {
 if (!('mediaSession' in navigator)) return;
@@ -2544,7 +2551,6 @@ const stopAll = function () {
 if (live.on) liveStop();
 if (labSession) { stopLab(); $('stageMeta').textContent = '— · —'; }
 if (!audioEl.paused) audioEl.pause();
-keepAliveOff(0);
 mediaMeta();
 };
 [['play', function () {
@@ -3113,7 +3119,7 @@ curve[i] = x < 0 ? -y : y;
 }
 cap.curve = curve; cap.oversample = '2x';
 lim.connect(cap); cap.connect(audioCtx.destination);
-safeIn = lim;
+safeIn = lim; safeOut = cap;
 }
 return audioCtx;
 }
@@ -3199,13 +3205,13 @@ const tm = audioCtx.currentTime;
 try { s.master.gain.cancelScheduledValues(tm); s.master.gain.setValueAtTime(s.master.gain.value, tm); s.master.gain.linearRampToValueAtTime(0, tm + 0.06); } catch (e) {}
 setTimeout(function () { s.src.forEach(function (x) { try { x.stop(); } catch (e) {} try { x.disconnect(); } catch (e) {} }); s.nodes.forEach(function (x) { try { x.disconnect(); } catch (e) {} }); }, 170);
 resetLab();
-keepAliveOff(400);
+holderStopSoon();
 mediaMeta();
 }
 function baseSess(kind) {
 audioEl.pause();
 lastSource = 'lab';
-keepAliveOn();
+holderStart();
 const m = audioCtx.createGain();
 m.gain.value = 0; m.connect(safeIn);
 m.gain.setValueAtTime(0, audioCtx.currentTime);
@@ -3451,7 +3457,7 @@ audioEl.pause();
 try {
 await ensureCtx();
 lastSource = 'live';
-keepAliveOn();
+holderStart();
 live.gain = audioCtx.createGain();
 live.gain.gain.value = 0;
 live.an = audioCtx.createAnalyser();
@@ -3496,7 +3502,7 @@ setTimeout(function () { try { if (g) g.disconnect(); } catch (e) {} try { if (a
 $('liveMeterFill').style.transform = 'scaleX(0)';
 $('liveMeterVal').textContent = '—';
 resetLab();
-keepAliveOff(400);
+holderStopSoon();
 mediaMeta();
 }
 function liveRebuild() {
