@@ -2427,26 +2427,37 @@ const audioEl = new Audio();
 audioEl.preload = 'auto';
 audioEl.setAttribute('playsinline', '');
 const seekBar = $('seekBar');
-let mediaTimer = 0, lastSource = 'file', holderT = 0, bridge = null, bridgeOn = false;
+let mediaTimer = 0, lastSource = 'file', holderT = 0;
 const keepAlive = new Audio();
+keepAlive.loop = true;
 keepAlive.preload = 'auto';
+keepAlive.volume = 1;
 keepAlive.setAttribute('playsinline', '');
+keepAlive.src = (function () {
+const sr = 8000, n = sr * 30, size = 44 + n * 2;
+const ab = new ArrayBuffer(size), dv = new DataView(ab);
+function ws(o, s) { for (let i = 0; i < s.length; i++) dv.setUint8(o + i, s.charCodeAt(i)); }
+ws(0, 'RIFF'); dv.setUint32(4, size - 8, true); ws(8, 'WAVE'); ws(12, 'fmt ');
+dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+dv.setUint32(24, sr, true); dv.setUint32(28, sr * 2, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
+ws(36, 'data'); dv.setUint32(40, n * 2, true);
+for (let i = 0; i < n; i++) dv.setInt16(44 + i * 2, (Math.floor(i / 20) % 2 ? 33 : -33), true);
+return URL.createObjectURL(new Blob([ab], { type: 'audio/wav' }));
+})();
 document.body.appendChild(keepAlive);
 document.body.appendChild(audioEl);
 function holderStart() {
 if (holderT) { clearTimeout(holderT); holderT = 0; }
-if (!audioCtx || !safeOut || !audioCtx.createMediaStreamDestination || !('srcObject' in keepAlive)) return;
-try {
-if (!bridge) bridge = audioCtx.createMediaStreamDestination();
-if (!bridgeOn) {
-try { safeOut.disconnect(audioCtx.destination); } catch (e) {}
-safeOut.connect(bridge);
-bridgeOn = true;
+if (!audioEl.paused) audioEl.pause();
+if (keepAlive.paused) { const p = keepAlive.play(); if (p && p.catch) p.catch(function () {}); }
 }
-if (keepAlive.srcObject !== bridge.stream) keepAlive.srcObject = bridge.stream;
-const p = keepAlive.play();
-if (p && p.catch) p.catch(holderStop);
-} catch (e) { holderStop(); }
+function holderStop() {
+if (holderT) { clearTimeout(holderT); holderT = 0; }
+if (!keepAlive.paused) keepAlive.pause();
+}
+function holderStopSoon() {
+if (holderT) clearTimeout(holderT);
+holderT = setTimeout(function () { holderT = 0; if (!live.on && !labSession) holderStop(); }, 350);
 }
 function holderStop() {
 if (holderT) { clearTimeout(holderT); holderT = 0; }
@@ -2471,8 +2482,9 @@ function playIcon(p) { $('playIcon').innerHTML = p ? '<path d="M6 5h4v14H6zM14 5
 function timeText() { $('timeDisplay').textContent = fmtTime(audioEl.currentTime) + ' / ' + fmtTime(audioEl.duration || state.duration_s); }
 audioEl.addEventListener('timeupdate', function () { timeText(); if (!state.seeking && audioEl.duration > 0) seekBar.value = Math.floor(audioEl.currentTime / audioEl.duration * 1000); positionState(); });
 audioEl.addEventListener('loadedmetadata', function () { timeText(); seekBar.disabled = false; positionState(); });
+audioEl.addEventListener('durationchange', function () { positionState(); });
 audioEl.addEventListener('seeked', function () { positionState(); });
-audioEl.addEventListener('play', function () { playIcon(true); if (!rafMeters) rafMeters = requestAnimationFrame(meterLoop); mediaMeta(); positionState(); });
+audioEl.addEventListener('play', function () { holderStop(); playIcon(true); if (!rafMeters) rafMeters = requestAnimationFrame(meterLoop); mediaMeta(); positionState(); });
 audioEl.addEventListener('pause', function () { playIcon(false); updateMeters(); mediaMeta(); positionState(); });
 audioEl.addEventListener('ended', function () { playIcon(false); updateMeters(); mediaMeta(); });
 audioEl.addEventListener('error', function () { if (state.url) pFail(t('playFail')); });
@@ -2540,7 +2552,7 @@ artwork: artUrl ? [{ src: artUrl, sizes: '512x512', type: 'image/png' }] : []
 }
 function positionState() {
 if (!('mediaSession' in navigator) || !navigator.mediaSession.setPositionState) return;
-if (live.on || labSession || bridgeOn) return;
+if (live.on || labSession) return;
 const d = audioEl.duration;
 if (!(d > 0) || !isFinite(d)) return;
 try { navigator.mediaSession.setPositionState({ duration: d, playbackRate: audioEl.playbackRate || 1, position: clamp(audioEl.currentTime, 0, d) }); } catch (e) {}
