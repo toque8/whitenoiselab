@@ -4225,7 +4225,6 @@ releaseOrientation();
 document.addEventListener('fullscreenchange', function () { releaseOrientation(); focusSync(); });
 document.addEventListener('webkitfullscreenchange', function () { releaseOrientation(); focusSync(); });
 document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'visible') { releaseOrientation(); if (state.focus) grabWake(); } });
-document.addEventListener('pointerup', focusRearm, true);
 window.addEventListener('orientationchange', releaseOrientation);
 $('tabs').querySelectorAll('.tab').forEach(function (x) { const on = x.dataset.tab === state.mode; x.classList.toggle('active', on); x.setAttribute('aria-selected', on ? 'true' : 'false'); });
 $('generatorSidebar').classList.toggle('hidden', state.mode !== 'generate');
